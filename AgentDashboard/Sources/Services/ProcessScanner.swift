@@ -187,7 +187,7 @@ class ProcessScanner: ObservableObject {
                 elapsedTime = ""
             }
 
-            let lastActive: Double
+            var lastActive: Double
             if let sid = sessionId, let hookTime = lastHookEvents[sid] {
                 lastActive = hookTime.timeIntervalSince1970 * 1000
             } else if let sid = sessionId,
@@ -205,6 +205,14 @@ class ProcessScanner: ObservableObject {
                 } else {
                     lastActive = 0
                 }
+            }
+
+            let childLastActive = latestChildActivity(
+                parentPid: proc.pid, parentCwd: sessionCwd,
+                allSessions: allSessions, transcriptReader: transcriptReader
+            )
+            if childLastActive > lastActive {
+                lastActive = childLastActive
             }
 
             agents.append(AgentInfo(
@@ -244,6 +252,31 @@ class ProcessScanner: ObservableObject {
             },
             updatedCwdCache: newCwdCache
         )
+    }
+
+    // MARK: - Latest child job activity
+
+    private nonisolated static func latestChildActivity(
+        parentPid: Int, parentCwd: String,
+        allSessions: [Int: [String: Any]], transcriptReader: TranscriptTailReader
+    ) -> Double {
+        var latest: Double = 0
+        for (childPid, session) in allSessions {
+            guard childPid != parentPid,
+                  let kind = session["kind"] as? String, kind == "bg",
+                  let childCwd = session["cwd"] as? String, childCwd == parentCwd,
+                  let childSessionId = session["sessionId"] as? String else { continue }
+
+            if let path = transcriptReader.findTranscriptPath(sessionId: childSessionId, cwd: childCwd),
+               let attrs = try? FileManager.default.attributesOfItem(atPath: path),
+               let mtime = attrs[.modificationDate] as? Date {
+                let ms = mtime.timeIntervalSince1970 * 1000
+                if ms > latest { latest = ms }
+            } else if let ua = session["updatedAt"] as? Double, ua > latest {
+                latest = ua
+            }
+        }
+        return latest
     }
 
     // MARK: - Load all sessions for cross-referencing
