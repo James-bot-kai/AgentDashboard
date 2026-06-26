@@ -204,6 +204,9 @@ class ProcessScanner: ObservableObject {
                     return $0.status.sortPriority < $1.status.sortPriority
                 }
                 if !$0.status.isActive {
+                    if $0.hasUnread != $1.hasUnread {
+                        return $0.hasUnread
+                    }
                     return $0.lastActiveAt > $1.lastActiveAt
                 }
                 return $0.elapsedSeconds < $1.elapsedSeconds
