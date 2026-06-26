@@ -29,6 +29,15 @@ class ProcessScanner: ObservableObject {
     func markAsRead(sessionId: String?) {
         guard let sid = sessionId else { return }
         unreadSessionIds.remove(sid)
+        if let idx = agents.firstIndex(where: { $0.sessionId == sid && $0.hasUnread }) {
+            let old = agents[idx]
+            agents[idx] = AgentInfo(
+                pid: old.pid, type: old.type, tty: old.tty,
+                workingDirectory: old.workingDirectory, elapsedTime: old.elapsedTime,
+                status: old.status, sessionName: old.sessionName,
+                sessionId: old.sessionId, lastActiveAt: old.lastActiveAt, hasUnread: false
+            )
+        }
     }
 
     enum PollingMode {
