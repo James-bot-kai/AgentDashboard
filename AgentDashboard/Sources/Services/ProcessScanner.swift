@@ -185,6 +185,18 @@ class ProcessScanner: ObservableObject {
                 elapsedTime = ""
             }
 
+            let lastActive: Double
+            if let sid = sessionId,
+               let transcriptPath = transcriptReader.findTranscriptPath(sessionId: sid, cwd: sessionCwd),
+               let attrs = try? FileManager.default.attributesOfItem(atPath: transcriptPath),
+               let mtime = attrs[.modificationDate] as? Date {
+                lastActive = mtime.timeIntervalSince1970 * 1000
+            } else if updatedAt > 0 {
+                lastActive = updatedAt
+            } else {
+                lastActive = 0
+            }
+
             agents.append(AgentInfo(
                 pid: proc.pid,
                 type: proc.type,
@@ -194,7 +206,7 @@ class ProcessScanner: ObservableObject {
                 status: status,
                 sessionName: sessionName,
                 sessionId: sessionId,
-                lastActiveAt: updatedAt,
+                lastActiveAt: lastActive,
                 hasUnread: unreadSessionIds.contains(sessionId ?? "")
             ))
         }
