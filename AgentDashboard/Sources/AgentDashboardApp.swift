@@ -32,11 +32,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         popover = NSPopover()
-        popover.contentSize = NSSize(width: 360, height: 450)
+        popover.contentSize = NSSize(width: 360, height: 200)
         popover.behavior = .transient
-        popover.contentViewController = NSHostingController(
+        let hostingController = NSHostingController(
             rootView: MenuBarPopover(scanner: scanner)
         )
+        hostingController.sizingOptions = [.preferredContentSize]
+        popover.contentViewController = hostingController
 
         // Drive menu bar badge directly from @Published agents
         cancellable = scanner.$agents

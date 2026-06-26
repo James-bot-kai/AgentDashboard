@@ -20,7 +20,9 @@ struct MenuBarPopover: View {
                 Spacer()
                 Button(action: { scanner.scan() }) {
                     Image(systemName: "arrow.clockwise")
-                        .font(.caption)
+                        .font(.system(size: 12, weight: .medium))
+                        .frame(width: 24, height: 24)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .help("Refresh")
@@ -64,6 +66,7 @@ struct MenuBarPopover: View {
                     }
                 }
                 .frame(maxHeight: 400)
+                .fixedSize(horizontal: false, vertical: true)
 
                 Divider()
 
