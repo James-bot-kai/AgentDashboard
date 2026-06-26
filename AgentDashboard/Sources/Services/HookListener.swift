@@ -22,6 +22,8 @@ class HookListener {
             turnStartMap[event.sessionId] = event.timestamp
         } else if event.hookType == .stop {
             turnStartMap.removeValue(forKey: event.sessionId)
+        } else if turnStartMap[event.sessionId] == nil {
+            turnStartMap[event.sessionId] = event.timestamp
         }
 
         guard let status = mapEventToStatus(event) else {
