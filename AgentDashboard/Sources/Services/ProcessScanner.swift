@@ -7,6 +7,7 @@ private let logger = Logger(subsystem: "com.lucky.AgentDashboard", category: "Pr
 @MainActor
 class ProcessScanner: ObservableObject {
     @Published var agents: [AgentInfo] = []
+    @Published private(set) var unreadSessionIds: Set<String> = []
 
     private let sessionsDir = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent(".claude/sessions")
@@ -24,6 +25,11 @@ class ProcessScanner: ObservableObject {
     // cwd cache: pid -> (cwd, timestamp)
     private var cwdCache: [Int: (path: String, time: Date)] = [:]
     private let cwdCacheTTL: TimeInterval = 30
+
+    func markAsRead(sessionId: String?) {
+        guard let sid = sessionId else { return }
+        unreadSessionIds.remove(sid)
+    }
 
     enum PollingMode {
         case active      // popover visible, 2s
@@ -75,15 +81,22 @@ class ProcessScanner: ObservableObject {
         let sessDir = sessionsDir
         let jDir = jobsDir
         let hookStatusSnapshot = hookListener.snapshot()
+        let unreadIds = unreadSessionIds
 
         Task.detached { [weak self] in
             let results = ProcessScanner.performScan(
                 cwdCache: cachedCwd, cacheTTL: cacheTTL,
                 transcriptReader: reader, sessionsDir: sessDir, jobsDir: jDir,
-                hookStatuses: hookStatusSnapshot
+                hookStatuses: hookStatusSnapshot, unreadSessionIds: unreadIds
             )
             await MainActor.run { [weak self] in
                 guard let self = self else { return }
+
+                let previousActiveIds = Set(self.agents.filter { $0.status.isActive }.compactMap(\.sessionId))
+                let newIdleIds = Set(results.agents.filter { !$0.status.isActive }.compactMap(\.sessionId))
+                let justBecameIdle = previousActiveIds.intersection(newIdleIds)
+                self.unreadSessionIds.formUnion(justBecameIdle)
+
                 self.agents = results.agents
                 self.cwdCache = results.updatedCwdCache
                 self.isScanning = false
@@ -108,7 +121,8 @@ class ProcessScanner: ObservableObject {
         transcriptReader: TranscriptTailReader,
         sessionsDir: URL,
         jobsDir: URL,
-        hookStatuses: [String: AgentStatus]
+        hookStatuses: [String: AgentStatus],
+        unreadSessionIds: Set<String>
     ) -> ScanResult {
         let terminalProcesses = getTerminalProcesses(cwdCache: cwdCache, cacheTTL: cacheTTL)
         let allSessions = loadAllSessions(sessionsDir: sessionsDir)
@@ -160,7 +174,8 @@ class ProcessScanner: ObservableObject {
                 status: status,
                 sessionName: sessionName,
                 sessionId: sessionId,
-                lastActiveAt: updatedAt
+                lastActiveAt: updatedAt,
+                hasUnread: unreadSessionIds.contains(sessionId ?? "")
             ))
         }
 

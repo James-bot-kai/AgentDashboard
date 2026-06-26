@@ -47,14 +47,18 @@ struct MenuBarPopover: View {
                         if !activeAgents.isEmpty {
                             SectionHeader(title: "Active", count: activeAgents.count)
                             ForEach(activeAgents) { agent in
-                                AgentRowView(agent: agent)
+                                AgentRowView(agent: agent) {
+                                    scanner.markAsRead(sessionId: agent.sessionId)
+                                }
                             }
                         }
 
                         if !idleAgents.isEmpty {
                             SectionHeader(title: "Idle", count: idleAgents.count)
                             ForEach(idleAgents) { agent in
-                                AgentRowView(agent: agent)
+                                AgentRowView(agent: agent) {
+                                    scanner.markAsRead(sessionId: agent.sessionId)
+                                }
                             }
                         }
                     }

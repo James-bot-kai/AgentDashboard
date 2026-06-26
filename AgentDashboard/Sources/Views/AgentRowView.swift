@@ -2,10 +2,12 @@ import SwiftUI
 
 struct AgentRowView: View {
     let agent: AgentInfo
+    var onRead: (() -> Void)?
     @State private var isHovered = false
 
     var body: some View {
         Button(action: {
+            onRead?()
             ITerm2Bridge.activateSession(tty: agent.tty)
         }) {
             HStack(spacing: 8) {
@@ -27,6 +29,12 @@ struct AgentRowView: View {
                                 .background(agent.status.color.opacity(0.12))
                                 .cornerRadius(3)
                         }
+
+                        if agent.hasUnread {
+                            Circle()
+                                .fill(Color.blue)
+                                .frame(width: 8, height: 8)
+                        }
                     }
                     Text(shortPath)
                         .font(.caption)
@@ -45,7 +53,7 @@ struct AgentRowView: View {
             .padding(.vertical, 6)
             .background(isHovered ? Color.primary.opacity(0.06) : Color.clear)
             .cornerRadius(6)
-            .opacity(agent.status.isActive || isHovered ? 1.0 : 0.55)
+            .opacity(agent.status.isActive || agent.hasUnread || isHovered ? 1.0 : 0.55)
         }
         .buttonStyle(.plain)
         .help(agent.workingDirectory.replacingOccurrences(of: NSHomeDirectory(), with: "~"))
