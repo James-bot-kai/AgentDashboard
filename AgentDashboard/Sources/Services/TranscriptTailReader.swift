@@ -153,6 +153,36 @@ final class TranscriptTailReader: @unchecked Sendable {
         return nil
     }
 
+    func findLatestTranscriptInProject(cwd: String) -> String? {
+        let homeDir = FileManager.default.homeDirectoryForCurrentUser.path
+        let projectsDir = "\(homeDir)/.claude/projects"
+        let encodedPath = cwd.replacingOccurrences(of: "/", with: "-")
+
+        guard let entries = try? FileManager.default.contentsOfDirectory(atPath: projectsDir) else {
+            return nil
+        }
+
+        for entry in entries {
+            guard entry == encodedPath || entry.hasSuffix(encodedPath) else { continue }
+            let dir = "\(projectsDir)/\(entry)"
+            guard let files = try? FileManager.default.contentsOfDirectory(atPath: dir) else { continue }
+
+            var newest: String?
+            var newestTime: Date = .distantPast
+            for file in files where file.hasSuffix(".jsonl") {
+                let path = "\(dir)/\(file)"
+                if let attrs = try? FileManager.default.attributesOfItem(atPath: path),
+                   let mtime = attrs[.modificationDate] as? Date,
+                   mtime > newestTime {
+                    newestTime = mtime
+                    newest = path
+                }
+            }
+            if newest != nil { return newest }
+        }
+        return nil
+    }
+
     func clearCache() {
         queue.sync { pathCache.removeAll() }
     }

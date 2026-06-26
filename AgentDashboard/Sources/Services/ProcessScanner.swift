@@ -191,6 +191,10 @@ class ProcessScanner: ObservableObject {
                let attrs = try? FileManager.default.attributesOfItem(atPath: transcriptPath),
                let mtime = attrs[.modificationDate] as? Date {
                 lastActive = mtime.timeIntervalSince1970 * 1000
+            } else if let latestPath = transcriptReader.findLatestTranscriptInProject(cwd: sessionCwd),
+                      let attrs = try? FileManager.default.attributesOfItem(atPath: latestPath),
+                      let mtime = attrs[.modificationDate] as? Date {
+                lastActive = mtime.timeIntervalSince1970 * 1000
             } else if updatedAt > 0 {
                 lastActive = updatedAt
             } else {
