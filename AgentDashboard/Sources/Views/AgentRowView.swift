@@ -45,9 +45,11 @@ struct AgentRowView: View {
 
                 Spacer()
 
-                Text(agent.elapsedTime)
-                    .font(.caption2)
-                    .foregroundColor(.secondary)
+                if !agent.elapsedTime.isEmpty {
+                    Text(agent.elapsedTime)
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 6)

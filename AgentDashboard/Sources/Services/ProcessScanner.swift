@@ -81,13 +81,15 @@ class ProcessScanner: ObservableObject {
         let sessDir = sessionsDir
         let jDir = jobsDir
         let hookStatusSnapshot = hookListener.snapshot()
+        let turnStarts = hookListener.turnStartSnapshot()
         let unreadIds = unreadSessionIds
 
         Task.detached { [weak self] in
             let results = ProcessScanner.performScan(
                 cwdCache: cachedCwd, cacheTTL: cacheTTL,
                 transcriptReader: reader, sessionsDir: sessDir, jobsDir: jDir,
-                hookStatuses: hookStatusSnapshot, unreadSessionIds: unreadIds
+                hookStatuses: hookStatusSnapshot, turnStarts: turnStarts,
+                unreadSessionIds: unreadIds
             )
             await MainActor.run { [weak self] in
                 guard let self = self else { return }
@@ -122,6 +124,7 @@ class ProcessScanner: ObservableObject {
         sessionsDir: URL,
         jobsDir: URL,
         hookStatuses: [String: AgentStatus],
+        turnStarts: [String: Date],
         unreadSessionIds: Set<String>
     ) -> ScanResult {
         let terminalProcesses = getTerminalProcesses(cwdCache: cwdCache, cacheTTL: cacheTTL)
@@ -165,12 +168,20 @@ class ProcessScanner: ObservableObject {
                 status = .busy
             }
 
+            let elapsedTime: String
+            if status.isActive, let sid = sessionId, let turnStart = turnStarts[sid] {
+                let seconds = Int(Date().timeIntervalSince(turnStart))
+                elapsedTime = formatSeconds(max(0, seconds))
+            } else {
+                elapsedTime = ""
+            }
+
             agents.append(AgentInfo(
                 pid: proc.pid,
                 type: proc.type,
                 tty: proc.tty,
                 workingDirectory: sessionCwd,
-                elapsedTime: proc.etime,
+                elapsedTime: elapsedTime,
                 status: status,
                 sessionName: sessionName,
                 sessionId: sessionId,
@@ -469,6 +480,23 @@ class ProcessScanner: ObservableObject {
             return "\(parts[0])m \(parts[1])s"
         default:
             return hms
+        }
+    }
+
+    private nonisolated static func formatSeconds(_ totalSeconds: Int) -> String {
+        guard totalSeconds > 0 else { return "0s" }
+        let days = totalSeconds / 86400
+        let hours = (totalSeconds % 86400) / 3600
+        let minutes = (totalSeconds % 3600) / 60
+        if days > 0 {
+            return "\(days)d \(hours)h"
+        } else if hours > 0 {
+            return "\(hours)h \(minutes)m"
+        } else if minutes > 0 {
+            let secs = totalSeconds % 60
+            return "\(minutes)m \(secs)s"
+        } else {
+            return "\(totalSeconds)s"
         }
     }
 }
