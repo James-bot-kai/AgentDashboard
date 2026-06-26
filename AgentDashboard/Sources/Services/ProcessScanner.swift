@@ -14,9 +14,12 @@ class ProcessScanner: ObservableObject {
         .appendingPathComponent(".claude/jobs")
     private let transcriptReader = TranscriptTailReader()
 
+    private let hookServer = HookServer()
+    private let hookListener = HookListener()
+
     private var scanTimer: Timer?
     private var isScanning = false
-    private var pollingInterval: TimeInterval = 5.0
+    private var pollingInterval: TimeInterval = 10.0
 
     // cwd cache: pid -> (cwd, timestamp)
     private var cwdCache: [Int: (path: String, time: Date)] = [:]
@@ -24,24 +27,33 @@ class ProcessScanner: ObservableObject {
 
     enum PollingMode {
         case active      // popover visible, 2s
-        case background  // popover hidden, 5s
+        case background  // popover hidden, 10s (hooks provide real-time updates)
     }
 
     func setPollingMode(_ mode: PollingMode) {
-        let newInterval: TimeInterval = mode == .active ? 2.0 : 5.0
+        let newInterval: TimeInterval = mode == .active ? 2.0 : 10.0
         guard newInterval != pollingInterval else { return }
         pollingInterval = newInterval
         startScanning(interval: newInterval)
     }
 
-    func startScanning(interval: TimeInterval = 5.0) {
+    func startScanning(interval: TimeInterval = 10.0) {
         scanTimer?.invalidate()
         pollingInterval = interval
+
+        hookServer.onEvent = { [weak self] event in
+            Task { @MainActor in
+                self?.hookListener.handleEvent(event)
+                self?.scan()
+            }
+        }
+        hookServer.start()
 
         scan()
 
         scanTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
             Task { @MainActor in
+                self?.hookListener.clearStaleEntries()
                 self?.scan()
             }
         }
@@ -50,6 +62,7 @@ class ProcessScanner: ObservableObject {
     func stopScanning() {
         scanTimer?.invalidate()
         scanTimer = nil
+        hookServer.stop()
     }
 
     func scan() {
@@ -61,11 +74,13 @@ class ProcessScanner: ObservableObject {
         let reader = transcriptReader
         let sessDir = sessionsDir
         let jDir = jobsDir
+        let hookStatusSnapshot = hookListener.snapshot()
 
         Task.detached { [weak self] in
             let results = ProcessScanner.performScan(
                 cwdCache: cachedCwd, cacheTTL: cacheTTL,
-                transcriptReader: reader, sessionsDir: sessDir, jobsDir: jDir
+                transcriptReader: reader, sessionsDir: sessDir, jobsDir: jDir,
+                hookStatuses: hookStatusSnapshot
             )
             await MainActor.run { [weak self] in
                 guard let self = self else { return }
@@ -92,7 +107,8 @@ class ProcessScanner: ObservableObject {
         cacheTTL: TimeInterval,
         transcriptReader: TranscriptTailReader,
         sessionsDir: URL,
-        jobsDir: URL
+        jobsDir: URL,
+        hookStatuses: [String: AgentStatus]
     ) -> ScanResult {
         let terminalProcesses = getTerminalProcesses(cwdCache: cwdCache, cacheTTL: cacheTTL)
         let allSessions = loadAllSessions(sessionsDir: sessionsDir)
@@ -115,7 +131,9 @@ class ProcessScanner: ObservableObject {
 
             let status: AgentStatus
 
-            if sessionStatus == "busy", let sid = sessionId {
+            if let sid = sessionId, let hookStatus = hookStatuses[sid] {
+                status = hookStatus
+            } else if sessionStatus == "busy", let sid = sessionId {
                 status = inferDetailedStatus(sessionId: sid, cwd: sessionCwd, transcriptReader: transcriptReader)
             } else if sessionStatus == "idle" {
                 if let childStatus = findActiveChildJobStatus(
