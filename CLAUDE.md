@@ -28,5 +28,5 @@ pkill -f AgentDashboard; open build/AgentDashboard.app  # 重启
 ## Git 提交
 
 - 在完成一个完整功能或修复后进行 git 提交
-- commit message 使用英文，简洁描述改动意图
+- commit message 使用中文，简洁描述改动意图
 - 不要提交 build/ 和 .build/ 目录
