@@ -49,6 +49,10 @@ struct AgentRowView: View {
                     Text(agent.elapsedTime)
                         .font(.caption2)
                         .foregroundColor(.secondary)
+                } else if !agent.status.isActive, agent.lastActiveAt > 0 {
+                    Text(relativeTime(agent.lastActiveAt))
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
                 }
             }
             .padding(.horizontal, 12)
@@ -72,5 +76,17 @@ struct AgentRowView: View {
         }
         let last2 = components.suffix(2).joined(separator: "/")
         return "…/\(last2)"
+    }
+
+    private func relativeTime(_ msTimestamp: Double) -> String {
+        let seconds = Int(Date().timeIntervalSince1970 - msTimestamp / 1000)
+        guard seconds > 0 else { return "just now" }
+        if seconds < 60 { return "\(seconds)s ago" }
+        let minutes = seconds / 60
+        if minutes < 60 { return "\(minutes)m ago" }
+        let hours = minutes / 60
+        if hours < 24 { return "\(hours)h ago" }
+        let days = hours / 24
+        return "\(days)d ago"
     }
 }
