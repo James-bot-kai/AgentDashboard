@@ -142,13 +142,6 @@ class ProcessScanner: ObservableObject {
                     transcriptReader: transcriptReader, jobsDir: jobsDir
                 ) {
                     status = childStatus
-                } else if proc.cpu > 3 {
-                    if let sid = sessionId {
-                        let inferred = inferDetailedStatus(sessionId: sid, cwd: sessionCwd, transcriptReader: transcriptReader)
-                        status = inferred == .busy ? .busy : inferred
-                    } else {
-                        status = .busy
-                    }
                 } else {
                     status = .idle
                 }
