@@ -183,6 +183,8 @@ class ProcessScanner: ObservableObject {
             if status.isActive, let sid = sessionId, let turnStart = turnStarts[sid] {
                 let seconds = Int(Date().timeIntervalSince(turnStart))
                 elapsedTime = formatSeconds(max(0, seconds))
+            } else if status.isActive {
+                elapsedTime = proc.etime.isEmpty ? "" : proc.etime
             } else {
                 elapsedTime = ""
             }
