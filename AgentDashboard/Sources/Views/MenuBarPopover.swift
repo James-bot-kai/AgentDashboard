@@ -25,6 +25,7 @@ struct MenuBarPopover: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .focusable(false)
                 .help("Refresh")
             }
             .padding(.horizontal, 12)
