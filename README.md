@@ -26,6 +26,16 @@ cd AgentDashboard
 
 要求：macOS 13+、Swift 5.7+
 
+### 重新启动
+
+在菜单栏弹窗里点 **Quit** 退出后,再次启动无需重新构建,直接:
+
+```bash
+open build/AgentDashboard.app
+```
+
+也可以在 Finder 里双击 `build/AgentDashboard.app`,或把它拖到「登录项」让开机自启。
+
 ### 配置 Hooks（推荐）
 
 在 `~/.claude/settings.json` 中添加 hook 配置，启用实时状态推送：
