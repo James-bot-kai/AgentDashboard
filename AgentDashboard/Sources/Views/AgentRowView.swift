@@ -10,7 +10,7 @@ struct AgentRowView: View {
     var body: some View {
         Button(action: {
             onRead?()
-            ITerm2Bridge.activateSession(tty: agent.tty)
+            TerminalBridge.activate(tty: agent.tty, app: agent.terminalApp)
         }) {
             HStack(spacing: 8) {
                 StatusBadge(status: agent.status)
