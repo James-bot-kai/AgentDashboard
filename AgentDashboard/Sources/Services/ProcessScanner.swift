@@ -27,6 +27,10 @@ class ProcessScanner: ObservableObject {
     private var cwdCache: [Int: (path: String, time: Date)] = [:]
     private let cwdCacheTTL: TimeInterval = 30
 
+    // terminal app cache: pid -> host terminal. Stable for a pid's lifetime,
+    // so no TTL — entries are dropped when the pid disappears from the scan.
+    private var terminalAppCache: [Int: TerminalApp] = [:]
+
     func markAsRead(sessionId: String?) {
         guard let sid = sessionId else { return }
         unreadSessionIds.remove(sid)
@@ -37,7 +41,7 @@ class ProcessScanner: ObservableObject {
                 workingDirectory: old.workingDirectory, elapsedTime: old.elapsedTime,
                 status: old.status, sessionName: old.sessionName,
                 sessionId: old.sessionId, lastActiveAt: old.lastActiveAt, hasUnread: false,
-                tokenUsage: old.tokenUsage
+                terminalApp: old.terminalApp, tokenUsage: old.tokenUsage
             )
         }
     }
@@ -94,6 +98,7 @@ class ProcessScanner: ObservableObject {
 
         let cachedCwd = cwdCache
         let cacheTTL = cwdCacheTTL
+        let cachedTerminalApp = terminalAppCache
         let reader = transcriptReader
         let tokenStats = tokenStatsReader
         let sessDir = sessionsDir
@@ -106,6 +111,7 @@ class ProcessScanner: ObservableObject {
         Task.detached { [weak self] in
             let results = ProcessScanner.performScan(
                 cwdCache: cachedCwd, cacheTTL: cacheTTL,
+                terminalAppCache: cachedTerminalApp,
                 transcriptReader: reader, sessionsDir: sessDir, jobsDir: jDir,
                 hookStatuses: hookStatusSnapshot, turnStarts: turnStarts,
                 lastHookEvents: lastEvents, unreadSessionIds: unreadIds,
@@ -121,6 +127,7 @@ class ProcessScanner: ObservableObject {
 
                 self.agents = results.agents
                 self.cwdCache = results.updatedCwdCache
+                self.terminalAppCache = results.updatedTerminalAppCache
                 self.tokenStatsReader.prune(keeping: results.usedTranscriptPaths)
                 self.isScanning = false
             }
@@ -136,12 +143,14 @@ class ProcessScanner: ObservableObject {
     private struct ScanResult: Sendable {
         let agents: [AgentInfo]
         let updatedCwdCache: [Int: (path: String, time: Date)]
+        let updatedTerminalAppCache: [Int: TerminalApp]
         let usedTranscriptPaths: Set<String>
     }
 
     private nonisolated static func performScan(
         cwdCache: [Int: (path: String, time: Date)],
         cacheTTL: TimeInterval,
+        terminalAppCache: [Int: TerminalApp],
         transcriptReader: TranscriptTailReader,
         sessionsDir: URL,
         jobsDir: URL,
@@ -151,7 +160,9 @@ class ProcessScanner: ObservableObject {
         unreadSessionIds: Set<String>,
         tokenStatsReader: TokenStatsReader
     ) -> ScanResult {
-        let terminalProcesses = getTerminalProcesses(cwdCache: cwdCache, cacheTTL: cacheTTL)
+        let terminalProcesses = getTerminalProcesses(
+            cwdCache: cwdCache, cacheTTL: cacheTTL, terminalAppCache: terminalAppCache
+        )
         let allSessions = loadAllSessions(sessionsDir: sessionsDir)
 
         var agents: [AgentInfo] = []
@@ -251,6 +262,7 @@ class ProcessScanner: ObservableObject {
                 sessionId: sessionId,
                 lastActiveAt: lastActive,
                 hasUnread: unreadSessionIds.contains(sessionId ?? ""),
+                terminalApp: proc.terminalApp,
                 tokenUsage: tokenUsage
             ))
         }
@@ -262,6 +274,8 @@ class ProcessScanner: ObservableObject {
                 newCwdCache.removeValue(forKey: pid)
             }
         }
+
+        let newTerminalAppCache = terminalProcesses.terminalAppCache.filter { livePids.contains($0.key) }
 
         return ScanResult(
             agents: agents.sorted {
@@ -277,6 +291,7 @@ class ProcessScanner: ObservableObject {
                 return $0.elapsedSeconds < $1.elapsedSeconds
             },
             updatedCwdCache: newCwdCache,
+            updatedTerminalAppCache: newTerminalAppCache,
             usedTranscriptPaths: usedTranscriptPaths
         )
     }
@@ -430,13 +445,19 @@ class ProcessScanner: ObservableObject {
         let etime: String
         let type: AgentType
         let cwd: String
+        let terminalApp: TerminalApp
     }
 
     private struct ProcessScanOutput {
         let processes: [TerminalProcess]
+        let terminalAppCache: [Int: TerminalApp]
     }
 
-    private nonisolated static func getTerminalProcesses(cwdCache: [Int: (path: String, time: Date)], cacheTTL: TimeInterval) -> ProcessScanOutput {
+    private nonisolated static func getTerminalProcesses(
+        cwdCache: [Int: (path: String, time: Date)],
+        cacheTTL: TimeInterval,
+        terminalAppCache: [Int: TerminalApp]
+    ) -> ProcessScanOutput {
         let process = Process()
         let pipe = Pipe()
 
@@ -449,7 +470,7 @@ class ProcessScanner: ObservableObject {
             try process.run()
         } catch {
             logger.error("Failed to run ps: \(error.localizedDescription)")
-            return ProcessScanOutput(processes: [])
+            return ProcessScanOutput(processes: [], terminalAppCache: terminalAppCache)
         }
 
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
@@ -458,6 +479,7 @@ class ProcessScanner: ObservableObject {
         let psOutput = String(data: data, encoding: .utf8) ?? ""
         let lines = psOutput.components(separatedBy: "\n")
         var results: [TerminalProcess] = []
+        var newTerminalAppCache = terminalAppCache
         let now = Date()
 
         for line in lines {
@@ -493,14 +515,24 @@ class ProcessScanner: ObservableObject {
                 cwd = getWorkingDirectory(pid: pid)
             }
 
+            // Terminal app is stable for a pid's lifetime — detect once, then reuse.
+            let terminalApp: TerminalApp
+            if let cached = newTerminalAppCache[pid] {
+                terminalApp = cached
+            } else {
+                terminalApp = detectTerminal(pid: pid)
+                newTerminalAppCache[pid] = terminalApp
+            }
+
             results.append(TerminalProcess(
                 pid: pid, tty: tty, stat: stat, cpu: cpu,
                 etime: formatElapsedTime(etime), type: type,
-                cwd: cwd.isEmpty ? "unknown" : cwd
+                cwd: cwd.isEmpty ? "unknown" : cwd,
+                terminalApp: terminalApp
             ))
         }
 
-        return ProcessScanOutput(processes: results)
+        return ProcessScanOutput(processes: results, terminalAppCache: newTerminalAppCache)
     }
 
     private nonisolated static func isClaudeLine(_ line: String) -> Bool {
@@ -548,6 +580,54 @@ class ProcessScanner: ObservableObject {
             }
         }
         return ""
+    }
+
+    // MARK: - Detect host terminal by walking the process parent chain
+
+    /// Walks the parent PID chain from `pid` upward, returning the first known
+    /// terminal emulator ancestor. Pattern observed: claude → zsh → login → Terminal.app.
+    /// The terminal app's own parent is launchd (pid 1), so we must inspect each
+    /// node's comm *before* stopping on ppid <= 1.
+    private nonisolated static func detectTerminal(pid: Int) -> TerminalApp {
+        var current = pid
+        for _ in 0..<20 {
+            guard let (ppid, comm) = psParentAndName(pid: current) else { break }
+            let base = (comm as NSString).lastPathComponent
+            if base == "Terminal" { return .terminal }
+            if base == "iTerm2" || base == "iTerm" { return .iTerm2 }
+            if ppid <= 1 { break }
+            current = ppid
+        }
+        return .unknown
+    }
+
+    /// Returns (ppid, comm) for a pid via `ps -o ppid=,comm= -p <pid>`.
+    private nonisolated static func psParentAndName(pid: Int) -> (ppid: Int, comm: String)? {
+        let process = Process()
+        let pipe = Pipe()
+
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+        process.executableURL = URL(fileURLWithPath: "/bin/ps")
+        process.arguments = ["-o", "ppid=,comm=", "-p", "\(pid)"]
+
+        do {
+            try process.run()
+        } catch {
+            return nil
+        }
+
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+
+        guard let output = String(data: data, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+              !output.isEmpty else { return nil }
+
+        let parts = output.components(separatedBy: .whitespaces).filter { !$0.isEmpty }
+        guard parts.count >= 2, let ppid = Int(parts[0]) else { return nil }
+        let comm = parts[1...].joined(separator: " ")
+        return (ppid, comm)
     }
 
     // MARK: - Time formatting
