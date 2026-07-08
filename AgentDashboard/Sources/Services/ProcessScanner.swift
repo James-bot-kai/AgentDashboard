@@ -548,7 +548,11 @@ class ProcessScanner: ObservableObject {
         let parts = line.components(separatedBy: .whitespaces).filter { !$0.isEmpty }
         guard parts.count >= 6 else { return false }
         let command = parts[5...].joined(separator: " ")
-        return command.hasPrefix("node") && command.contains("/codex")
+        // 新版 Codex CLI 直接以 `codex` 运行;旧版为 `node /path/codex`。两种格式都需识别。
+        let isCodex = command == "codex"
+            || command.hasPrefix("codex ")
+            || (command.hasPrefix("node") && command.contains("/codex"))
+        return isCodex
             && !command.contains("app-server") && !command.contains("node_repl")
             && !command.contains("ccb-agent-sidebar")
             && !command.contains("dangerously-bypass-hook-trust")
