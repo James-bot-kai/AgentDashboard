@@ -230,6 +230,10 @@ class ProcessScanner: ObservableObject {
                 } else {
                     status = .idle
                 }
+            } else if proc.type == .codex {
+                // codex 进程在但 session 暂时读不到(启动初期/文件未就绪):
+                // 视为等待输入,优于 CPU 兜底(初始化 CPU 高易误判 Running)。
+                status = .idle
             } else if sessionStatus == nil {
                 status = cpuFallbackStatus(cpu: proc.cpu, stat: proc.stat)
             } else {
@@ -267,6 +271,10 @@ class ProcessScanner: ObservableObject {
                     lastActive = mtime.timeIntervalSince1970 * 1000
                 } else if updatedAt > 0 {
                     lastActive = updatedAt
+                } else if proc.type == .codex {
+                    // codex 无 claude sessionFile:用进程启动时间兜底,
+                    // 保证 idle 时 "Xs ago" 有值(否则 lastActive=0 不渲染)。
+                    lastActive = proc.startedAt.timeIntervalSince1970 * 1000
                 } else {
                     lastActive = 0
                 }
@@ -486,6 +494,8 @@ class ProcessScanner: ObservableObject {
         let stat: String
         let cpu: Double
         let etime: String
+        /// 进程启动时间(由 ps etime 反推);codex 无 session 文件时兜底 lastActive。
+        let startedAt: Date
         let type: AgentType
         let cwd: String
         let terminalApp: TerminalApp
@@ -550,6 +560,7 @@ class ProcessScanner: ObservableObject {
             let stat = parts[2]
             let cpu = Double(parts[3]) ?? 0.0
             let etime = parts[4]
+            let startedAt = Date().addingTimeInterval(TimeInterval(-Self.parseEtimeSeconds(etime)))
 
             let cwd: String
             if let cached = cwdCache[pid], now.timeIntervalSince(cached.time) < cacheTTL {
@@ -569,7 +580,7 @@ class ProcessScanner: ObservableObject {
 
             results.append(TerminalProcess(
                 pid: pid, tty: tty, stat: stat, cpu: cpu,
-                etime: formatElapsedTime(etime), type: type,
+                etime: formatElapsedTime(etime), startedAt: startedAt, type: type,
                 cwd: cwd.isEmpty ? "unknown" : cwd,
                 terminalApp: terminalApp
             ))
@@ -678,6 +689,25 @@ class ProcessScanner: ObservableObject {
     }
 
     // MARK: - Time formatting
+
+    /// 解析 ps etime 原始格式为秒:"20" / "1:20" / "1:02:03" / "1-02:03:04"。
+    private nonisolated static func parseEtimeSeconds(_ etime: String) -> Int {
+        var days = 0
+        var hms = etime
+        if let dash = etime.firstIndex(of: "-") {
+            days = Int(etime[..<dash]) ?? 0
+            hms = String(etime[etime.index(after: dash)...])
+        }
+        let parts = hms.split(separator: ":").compactMap { Int($0) }
+        var total = days * 86400
+        switch parts.count {
+        case 3: total += parts[0] * 3600 + parts[1] * 60 + parts[2]
+        case 2: total += parts[0] * 60 + parts[1]
+        case 1: total += parts[0]
+        default: break
+        }
+        return total
+    }
 
     private nonisolated static func formatElapsedTime(_ etime: String) -> String {
         let parts = etime.split(separator: "-")
