@@ -4,5 +4,6 @@
   "CFBundleVersion": "1.0",
   "CFBundleShortVersionString": "1.0",
   "LSUIElement": true,
+  "CFBundleIconFile": "AppIcon",
   "NSAppleEventsUsageDescription": "AgentDashboard needs to control iTerm2 to switch terminal tabs."
 }

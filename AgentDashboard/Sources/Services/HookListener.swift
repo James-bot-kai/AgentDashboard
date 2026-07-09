@@ -18,6 +18,9 @@ class HookListener {
     ///       ② 降级:pending 超过 preToolConfirmDelay 仍未 PostToolUse → 视为确认中
     ///          (Notification 有内置 debounce 会延迟,这条让提示更快)。
     private var pendingSince: [String: Date] = [:]
+    /// 收到 Notification hook(真·等授权)的 session。PreToolUse 超时降级的不进此集 ——
+    /// 通知只对此集的 confirming 发,避免慢工具被超时降级误判时打扰。
+    private var explicitConfirming: Set<String> = []
     private let staleTTL: TimeInterval = 30
     /// confirming 不受 staleTTL 限制:应持续到 PostToolUse/Stop/UserPromptSubmit 等事件清除。
     /// 这里给一个很长的兜底 TTL,仅防止 statusMap 因异常漏事件而无限残留。
@@ -48,13 +51,15 @@ class HookListener {
             // 工具执行完成 → 若此前在等确认,清除 confirming(让 transcript 重新接管状态)。
             if statusMap[event.sessionId]?.status == .confirming {
                 statusMap.removeValue(forKey: event.sessionId)
+                explicitConfirming.remove(event.sessionId)
                 return
             }
         case .notification:
             // Notification 是 Claude Code 的"需用户注意"信号。结合 pending 工具判定:
-            // 有 pending 工具 → 权限确认;无 → 空闲等待(忽略)。
+            // 有 pending 工具 → 权限确认(真·等授权,记 explicit);无 → 空闲等待(忽略)。
             if pendingSince[event.sessionId] != nil {
                 statusMap[event.sessionId] = StatusEntry(status: .confirming, timestamp: event.timestamp)
+                explicitConfirming.insert(event.sessionId)
                 logger.debug("Notification → confirming: session=\(event.sessionId)")
             } else {
                 logger.debug("Notification → ignored (idle): session=\(event.sessionId) msg=\(event.message ?? "-")")
@@ -62,6 +67,7 @@ class HookListener {
             return
         case .stop, .userPromptSubmit:
             pendingSince.removeValue(forKey: event.sessionId)
+            explicitConfirming.remove(event.sessionId)
         }
 
         guard let status = mapEventToStatus(event) else {
@@ -101,14 +107,18 @@ class HookListener {
 
     func clearSession(_ sessionId: String) {
         statusMap.removeValue(forKey: sessionId)
+        explicitConfirming.remove(sessionId)
     }
 
     func clearStaleEntries() {
         let now = Date()
-        statusMap = statusMap.filter { entry in
+        let kept = statusMap.filter { entry in
             let ttl = entry.value.status == .confirming ? confirmingTTL : staleTTL * 3
             return now.timeIntervalSince(entry.value.timestamp) <= ttl
         }
+        let removed = Set(statusMap.keys).subtracting(Set(kept.keys))
+        explicitConfirming.subtract(removed)
+        statusMap = kept
     }
 
     func snapshot() -> [String: AgentStatus] {
@@ -121,6 +131,11 @@ class HookListener {
             }
         }
         return result
+    }
+
+    /// 当前收到 Notification hook(真·等授权)的 session 集。通知只对此集的 confirming 发。
+    func explicitConfirmingSnapshot() -> Set<String> {
+        explicitConfirming
     }
 
     func turnStartSnapshot() -> [String: Date] {

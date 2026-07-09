@@ -19,6 +19,9 @@ class ProcessScanner: ObservableObject {
 
     private let hookServer = HookServer()
     private let hookListener = HookListener()
+    private let notificationManager = NotificationManager()
+    /// 上一轮 scan 的 explicit confirming session 集,用于检测 claude Notification 触发的进入。
+    private var lastExplicitConfirming: Set<String> = []
 
     private var scanTimer: Timer?
     private var isScanning = false
@@ -35,6 +38,11 @@ class ProcessScanner: ObservableObject {
     // codex session rollout path cache: pid -> sessionPath. 进程存活期间 session 文件不变,
     // 所以无 TTL;pid 消失时在下轮扫描清理(同 terminalAppCache)。
     private var codexSessionCache: [Int: String] = [:]
+
+    /// 启动系统通知(授权请求 + 注册点击回调)。AppDelegate 启动时调一次。
+    func startNotifications() {
+        notificationManager.start()
+    }
 
     func markAsRead(sessionId: String?) {
         guard let sid = sessionId else { return }
@@ -111,6 +119,7 @@ class ProcessScanner: ObservableObject {
         let sessDir = sessionsDir
         let jDir = jobsDir
         let hookStatusSnapshot = hookListener.snapshot()
+        let explicitConfirming = hookListener.explicitConfirmingSnapshot()
         let turnStarts = hookListener.turnStartSnapshot()
         let lastEvents = hookListener.lastEventSnapshot()
         let unreadIds = unreadSessionIds
@@ -132,6 +141,42 @@ class ProcessScanner: ObservableObject {
                 let newIdleIds = Set(results.agents.filter { !$0.status.isActive }.compactMap(\.sessionId))
                 let justBecameIdle = previousActiveIds.intersection(newIdleIds)
                 self.unreadSessionIds.formUnion(justBecameIdle)
+
+                // 通知 diff:第一性——只认"真·等授权"信号:
+                //   codex require_escalated、claude Notification hook(explicitConfirming)。
+                //   claude 的 PreToolUse 超时降级是推测,不通知(只用于菜单栏图标快速提示)。
+                let oldById = Dictionary(self.agents.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+                let newIds = Set(results.agents.map { $0.id })
+
+                // 进程退出:清理通知状态与已发横幅
+                for oldAgent in self.agents where !newIds.contains(oldAgent.id) {
+                    self.notificationManager.purge(agentId: oldAgent.id)
+                }
+                for newAgent in results.agents {
+                    guard let oldAgent = oldById[newAgent.id] else { continue }   // 新 agent,不通知
+                    let old = oldAgent.status
+                    let nw = newAgent.status
+                    // codex confirming 进入 = require_escalated(真授权)。claude 走 explicit 集(下面)。
+                    if old != .confirming && nw == .confirming && newAgent.type == .codex {
+                        self.notificationManager.notify(agent: newAgent, kind: .needsConfirmation)
+                    }
+                    // confirming 离开(不管来源):清横幅
+                    if old == .confirming && nw != .confirming {
+                        self.notificationManager.clearConfirming(agentId: newAgent.id)
+                    }
+                    if old.isActive && !nw.isActive && oldAgent.elapsedSeconds > 30 {
+                        self.notificationManager.notify(agent: newAgent, kind: .completed)
+                    }
+                }
+                // claude 真 confirming(Notification hook):sessionId 新进 explicit 集 → notify。
+                // 用集 diff 而非 status diff,覆盖"先超时降级、后 Notification 到"的情况。
+                let enteredExplicit = explicitConfirming.subtracting(self.lastExplicitConfirming)
+                self.lastExplicitConfirming = explicitConfirming
+                for sid in enteredExplicit {
+                    if let agent = results.agents.first(where: { $0.sessionId == sid && $0.type == .claude && $0.status == .confirming }) {
+                        self.notificationManager.notify(agent: agent, kind: .needsConfirmation)
+                    }
+                }
 
                 self.agents = results.agents
                 self.cwdCache = results.updatedCwdCache

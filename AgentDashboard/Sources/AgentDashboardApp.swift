@@ -16,6 +16,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         logger.info("applicationDidFinishLaunching")
 
         scanner.startScanning()
+        scanner.startNotifications()
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
 
