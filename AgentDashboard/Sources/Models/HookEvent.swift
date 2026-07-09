@@ -16,6 +16,15 @@ struct HookEvent: Sendable {
     let message: String?
     let timestamp: Date
 
+    /// 直接构造(测试用)。
+    init(hookType: HookType, sessionId: String, toolName: String? = nil, message: String? = nil, timestamp: Date = Date()) {
+        self.hookType = hookType
+        self.sessionId = sessionId
+        self.toolName = toolName
+        self.message = message
+        self.timestamp = timestamp
+    }
+
     init?(queryType: String, json: [String: Any]) {
         guard let hookType = HookType(rawValue: queryType) else { return nil }
         self.hookType = hookType

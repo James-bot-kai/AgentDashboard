@@ -127,7 +127,7 @@ struct AgentInfo: Identifiable {
         self.tokenUsage = tokenUsage
     }
 
-    private static func parseElapsedTime(_ str: String) -> Int {
+    static func parseElapsedTime(_ str: String) -> Int {
         var total = 0
         let scanner = str.lowercased()
         let parts = scanner.components(separatedBy: " ")

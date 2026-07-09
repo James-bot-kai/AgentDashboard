@@ -179,6 +179,7 @@ class ProcessScanner: ObservableObject {
                 }
 
                 self.agents = results.agents
+                logger.debug("SCAN agents=\(results.agents.count) :: \(results.agents.map { "\($0.type.rawValue)#\($0.pid)[\($0.status.label)]" }.joined(separator: " "), privacy: .public)")
                 self.cwdCache = results.updatedCwdCache
                 self.terminalAppCache = results.updatedTerminalAppCache
                 self.codexSessionCache = results.updatedCodexSessionCache
@@ -523,7 +524,7 @@ class ProcessScanner: ObservableObject {
 
     // MARK: - CPU fallback
 
-    private nonisolated static func cpuFallbackStatus(cpu: Double, stat: String) -> AgentStatus {
+    nonisolated static func cpuFallbackStatus(cpu: Double, stat: String) -> AgentStatus {
         if stat.contains("R") || cpu > 20 {
             return .running
         } else if cpu > 2 {
@@ -636,7 +637,7 @@ class ProcessScanner: ObservableObject {
         return ProcessScanOutput(processes: results, terminalAppCache: newTerminalAppCache)
     }
 
-    private nonisolated static func isClaudeLine(_ line: String) -> Bool {
+    nonisolated static func isClaudeLine(_ line: String) -> Bool {
         let parts = line.components(separatedBy: .whitespaces).filter { !$0.isEmpty }
         guard parts.count >= 6 else { return false }
         let command = parts[5...].joined(separator: " ")
@@ -645,7 +646,7 @@ class ProcessScanner: ObservableObject {
             && !command.contains("bypassPermissions")
     }
 
-    private nonisolated static func isCodexLine(_ line: String) -> Bool {
+    nonisolated static func isCodexLine(_ line: String) -> Bool {
         let parts = line.components(separatedBy: .whitespaces).filter { !$0.isEmpty }
         guard parts.count >= 6 else { return false }
         let command = parts[5...].joined(separator: " ")
@@ -738,7 +739,7 @@ class ProcessScanner: ObservableObject {
     // MARK: - Time formatting
 
     /// 解析 ps etime 原始格式为秒:"20" / "1:20" / "1:02:03" / "1-02:03:04"。
-    private nonisolated static func parseEtimeSeconds(_ etime: String) -> Int {
+    nonisolated static func parseEtimeSeconds(_ etime: String) -> Int {
         var days = 0
         var hms = etime
         if let dash = etime.firstIndex(of: "-") {

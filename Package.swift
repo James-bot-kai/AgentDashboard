@@ -11,6 +11,12 @@ let package = Package(
             resources: [
                 .process("../Resources")
             ]
+        ),
+        .testTarget(
+            name: "AgentDashboardTests",
+            dependencies: [.target(name: "AgentDashboard")],
+            path: "AgentDashboard/Tests",
+            resources: [.copy("Fixtures")]
         )
     ]
 )
