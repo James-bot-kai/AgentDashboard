@@ -27,6 +27,12 @@ chmod +x "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
 # parses it cleanly (a JSON-formatted Info.plist triggers NSCocoaErrorDomain -3840).
 cp "$SCRIPT_DIR/AgentDashboard/Resources/Info.plist" "$APP_BUNDLE/Contents/Info.plist"
 plutil -convert binary1 "$APP_BUNDLE/Contents/Info.plist"
+cp "$SCRIPT_DIR/AgentDashboard/Resources/AppIcon.icns" "$APP_BUNDLE/Contents/Resources/AppIcon.icns"
+
+# 用固定的 bundle identifier 做 ad-hoc 签名。系统通知按签名 identifier 认 app;
+# 不签的话 macOS 用文件 hash 当 identifier(每次构建变化),系统认不出同一 app,
+# UNUserNotificationCenter 注册不上、系统设置 → 通知 也不列本 app。
+codesign --force --identifier "com.lucky.AgentDashboard" --sign - "$APP_BUNDLE" >/dev/null 2>&1 || true
 
 echo "Done! App bundle at: $APP_BUNDLE"
 
