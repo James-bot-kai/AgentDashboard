@@ -33,8 +33,9 @@ final class CodexTranscriptReader: @unchecked Sendable {
         return f
     }()
 
-    /// 在「今天」目录按 cwd 匹配,取 mtime 最新的 session 文件。
-    /// 仅扫 ~/.codex/sessions/YYYY/MM/DD/(本地今天);跨午夜 + dashboard 重启的极小概率漏判可接受。
+    /// 按 cwd 匹配 session 文件,取 mtime 最新的。扫最近 7 天目录
+    /// (~/.codex/sessions/YYYY/MM/DD/),覆盖跨天存活的 codex 进程——
+    /// 其 session 文件在启动那天目录,只扫「今天」会漏。
     func findSessionPath(cwd: String) -> String? {
         let cached: String? = queue.sync { pathCache[cwd] }
         if let cached = cached, FileManager.default.fileExists(atPath: cached) {
@@ -42,24 +43,25 @@ final class CodexTranscriptReader: @unchecked Sendable {
         }
 
         let cal = Calendar.current
-        let comps = cal.dateComponents([.year, .month, .day], from: Date())
-        guard let y = comps.year, let m = comps.month, let d = comps.day else { return nil }
         let home = FileManager.default.homeDirectoryForCurrentUser.path
-        let dir = String(format: "%@/.codex/sessions/%04d/%02d/%02d", home, y, m, d)
-
-        guard let entries = try? FileManager.default.contentsOfDirectory(atPath: dir) else {
-            return nil
-        }
-        let rollouts = entries.filter { $0.hasPrefix("rollout-") && $0.hasSuffix(".jsonl") }
-
         var best: (path: String, mtime: Date)?
-        for name in rollouts {
-            let path = "\(dir)/\(name)"
-            guard let cwdInFile = readSessionCwd(path: path), cwdInFile == cwd else { continue }
-            let mtime = (try? FileManager.default.attributesOfItem(atPath: path)[.modificationDate] as? Date)
-                ?? Date.distantPast
-            if best == nil || mtime > best!.mtime {
-                best = (path, mtime)
+
+        for daysAgo in 0..<7 {
+            guard let day = cal.date(byAdding: .day, value: -daysAgo, to: Date()) else { continue }
+            let comps = cal.dateComponents([.year, .month, .day], from: day)
+            guard let y = comps.year, let m = comps.month, let d = comps.day else { continue }
+            let dir = String(format: "%@/.codex/sessions/%04d/%02d/%02d", home, y, m, d)
+            guard let entries = try? FileManager.default.contentsOfDirectory(atPath: dir) else { continue }
+            let rollouts = entries.filter { $0.hasPrefix("rollout-") && $0.hasSuffix(".jsonl") }
+
+            for name in rollouts {
+                let path = "\(dir)/\(name)"
+                guard let cwdInFile = readSessionCwd(path: path), cwdInFile == cwd else { continue }
+                let mtime = (try? FileManager.default.attributesOfItem(atPath: path)[.modificationDate] as? Date)
+                    ?? Date.distantPast
+                if best == nil || mtime > best!.mtime {
+                    best = (path, mtime)
+                }
             }
         }
 

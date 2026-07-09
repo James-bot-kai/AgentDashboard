@@ -185,7 +185,9 @@ class ProcessScanner: ObservableObject {
         for proc in terminalProcesses.processes {
             newCwdCache[proc.pid] = (proc.cwd, Date())
 
-            let sessionData = allSessions[proc.pid]
+            // codex 不读 claude sessionData:codex 不写 ~/.claude/sessions,且 pid 复用会让
+            // allSessions[pid] 命中残留 claude session,污染 sessionCwd / kind → findSessionPath 失配。
+            let sessionData = proc.type == .codex ? nil : allSessions[proc.pid]
 
             let sessionStatus = sessionData?["status"] as? String
             let sessionId = sessionData?["sessionId"] as? String
