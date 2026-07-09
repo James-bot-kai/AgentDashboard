@@ -45,6 +45,8 @@ final class CodexTranscriptReader: @unchecked Sendable {
         let cal = Calendar.current
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         var best: (path: String, mtime: Date)?
+        var totalRollouts = 0
+        var matched = 0
 
         for daysAgo in 0..<7 {
             guard let day = cal.date(byAdding: .day, value: -daysAgo, to: Date()) else { continue }
@@ -53,10 +55,12 @@ final class CodexTranscriptReader: @unchecked Sendable {
             let dir = String(format: "%@/.codex/sessions/%04d/%02d/%02d", home, y, m, d)
             guard let entries = try? FileManager.default.contentsOfDirectory(atPath: dir) else { continue }
             let rollouts = entries.filter { $0.hasPrefix("rollout-") && $0.hasSuffix(".jsonl") }
+            totalRollouts += rollouts.count
 
             for name in rollouts {
                 let path = "\(dir)/\(name)"
                 guard let cwdInFile = readSessionCwd(path: path), cwdInFile == cwd else { continue }
+                matched += 1
                 let mtime = (try? FileManager.default.attributesOfItem(atPath: path)[.modificationDate] as? Date)
                     ?? Date.distantPast
                 if best == nil || mtime > best!.mtime {
@@ -64,6 +68,7 @@ final class CodexTranscriptReader: @unchecked Sendable {
                 }
             }
         }
+        logger.debug("FINDSESSION cwd=\(cwd, privacy: .public) days=7 rollouts=\(totalRollouts) matched=\(matched) -> \(best?.path ?? "nil", privacy: .public)")
 
         if let best = best {
             queue.sync { pathCache[cwd] = best.path }
@@ -93,7 +98,7 @@ final class CodexTranscriptReader: @unchecked Sendable {
     }
 
     /// 简易 JSON 字符串反转义(macOS 路径常见 \" \\ \/,其余Unicode原样保留)。
-    private static func unescapeJSONString(_ s: String) -> String {
+    static func unescapeJSONString(_ s: String) -> String {
         s.replacingOccurrences(of: "\\\"", with: "\"")
          .replacingOccurrences(of: "\\\\", with: "\\")
          .replacingOccurrences(of: "\\/", with: "/")
@@ -197,12 +202,13 @@ final class CodexTranscriptReader: @unchecked Sendable {
             turnStart = lastTaskStartedTime   // 可能为 nil → 不显示时间,但状态仍正确
         }
 
+        logger.debug("READSTATE status=\(status.label, privacy: .public) token=\(lastTokenUsage?.total.description ?? "-", privacy: .public) turnStart=\(turnStart != nil, privacy: .public)")
         return CodexState(status: status, tokenUsage: lastTokenUsage, turnStart: turnStart)
     }
 
     /// codex total_token_usage → TokenUsage。
     /// 保证 total == codex total_tokens:input 拆出 cached 部分,reasoning 折进 output。
-    private static func usage(from d: [String: Any]) -> TokenUsage {
+    static func usage(from d: [String: Any]) -> TokenUsage {
         let input = intField(d, "input_tokens")
         let cached = intField(d, "cached_input_tokens")
         let output = intField(d, "output_tokens")
