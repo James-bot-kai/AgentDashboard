@@ -8,10 +8,10 @@ enum AgentType: String, CaseIterable {
 
 /// Which terminal emulator hosts this agent's session.
 /// Drives click-to-jump routing; detected by walking the process tree.
-enum TerminalApp {
-    case iTerm2
-    case terminal
-    case unknown
+enum TerminalApp: String {
+    case iTerm2 = "iTerm2"
+    case terminal = "terminal"
+    case unknown = "unknown"
 }
 
 enum AgentStatus {
