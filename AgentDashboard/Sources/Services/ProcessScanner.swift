@@ -68,11 +68,11 @@ class ProcessScanner: ObservableObject {
         let newInterval: TimeInterval = mode == .active ? 2.0 : 10.0
         guard newInterval != pollingInterval else { return }
         pollingInterval = newInterval
-        startScanning(interval: newInterval)
+        scan()
+        scheduleScanTimer(interval: newInterval)
     }
 
     func startScanning(interval: TimeInterval = 10.0) {
-        scanTimer?.invalidate()
         pollingInterval = interval
 
         hookServer.onEvent = { [weak self] event in
@@ -86,6 +86,11 @@ class ProcessScanner: ObservableObject {
 
         scan()
 
+        scheduleScanTimer(interval: interval)
+    }
+
+    private func scheduleScanTimer(interval: TimeInterval) {
+        scanTimer?.invalidate()
         scanTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self else { return }
