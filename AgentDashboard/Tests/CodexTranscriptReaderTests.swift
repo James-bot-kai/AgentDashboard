@@ -34,6 +34,33 @@ final class CodexTranscriptReaderTests: XCTestCase {
         XCTAssertNotNil(s?.turnStart)
     }
 
+    /// Current Codex custom_tool_call stores tool JSON in payload.input, not arguments.
+    func testReadStateConfirmingFromCustomToolInput() {
+        let s = CodexTranscriptReader().readState(transcriptPath: fixture("confirming_custom"))
+        XCTAssertEqual(s?.status, .confirming)
+        XCTAssertNotNil(s?.turnStart)
+    }
+
+    func testRequiresEscalationIgnoresCommandText() {
+        let input = #"const r = await tools.exec_command({"cmd":"rg require_escalated"});"#
+        XCTAssertFalse(CodexTranscriptReader.requiresEscalation(input))
+    }
+
+    func testUnrelatedOutputDoesNotClearConfirming() {
+        let s = CodexTranscriptReader().readState(transcriptPath: fixture("confirming_custom_unrelated_output"))
+        XCTAssertEqual(s?.status, .confirming)
+    }
+
+    func testMatchingOutputClearsConfirming() {
+        let s = CodexTranscriptReader().readState(transcriptPath: fixture("confirming_custom_completed"))
+        XCTAssertNotEqual(s?.status, .confirming)
+    }
+
+    func testPreviousTurnApprovalDoesNotLeakIntoNewTurn() {
+        let s = CodexTranscriptReader().readState(transcriptPath: fixture("confirming_stale_previous_turn"))
+        XCTAssertEqual(s?.status, .thinking)
+    }
+
     func testReadStateIdleWithToken() {
         let s = CodexTranscriptReader().readState(transcriptPath: fixture("idle"))
         XCTAssertEqual(s?.status, .idle)

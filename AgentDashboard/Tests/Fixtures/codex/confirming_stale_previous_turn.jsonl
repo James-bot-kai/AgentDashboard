@@ -1,0 +1,5 @@
+{"timestamp": "2026-07-11T04:00:00.000Z", "type": "event_msg", "payload": {"type": "task_started"}}
+{"timestamp": "2026-07-11T04:00:01.000Z", "type": "response_item", "payload": {"type": "custom_tool_call", "name": "exec", "input": "const r = await tools.exec_command({\"cmd\":\"ps\",\"sandbox_permissions\":\"require_escalated\"});", "call_id": "call-old"}}
+{"timestamp": "2026-07-11T04:00:02.000Z", "type": "event_msg", "payload": {"type": "task_complete"}}
+{"timestamp": "2026-07-11T04:01:00.000Z", "type": "event_msg", "payload": {"type": "task_started"}}
+{"timestamp": "2026-07-11T04:01:01.000Z", "type": "event_msg", "payload": {"type": "user_message"}}

@@ -150,9 +150,9 @@ final class CodexTranscriptReader: @unchecked Sendable {
         /// 最后一个 task_started 之后是否出现过 task_complete(决定本轮是否还活跃)。
         var completedAfterLastStarted = false
         var lastTokenUsage: TokenUsage?
-        /// 最后一个工具调用是否需要用户授权(require_escalated)且尚未产出结果。
-        var lastCallNeedsApproval = false
-        var hasOutputAfterLastCall = false
+        /// 尚未收到对应 output 的 require_escalated 工具调用。
+        var pendingApprovalCallIds: Set<String> = []
+        var hasPendingApprovalWithoutCallId = false
 
         for line in lines {
             guard let data = line.data(using: .utf8),
@@ -163,11 +163,24 @@ final class CodexTranscriptReader: @unchecked Sendable {
 
             if type == "response_item", let pt = payload?["type"] as? String {
                 if pt == "function_call" || pt == "custom_tool_call" {
-                    let args = (payload?["arguments"] as? String) ?? ""
-                    lastCallNeedsApproval = args.contains("require_escalated")
-                    hasOutputAfterLastCall = false
+                    // Legacy function_call stores JSON in `arguments`; current
+                    // custom_tool_call stores the same tool input in `input`.
+                    let args = (payload?["arguments"] as? String)
+                        ?? (payload?["input"] as? String)
+                        ?? ""
+                    if Self.requiresEscalation(args) {
+                        if let callId = payload?["call_id"] as? String, !callId.isEmpty {
+                            pendingApprovalCallIds.insert(callId)
+                        } else {
+                            hasPendingApprovalWithoutCallId = true
+                        }
+                    }
                 } else if pt == "function_call_output" || pt == "custom_tool_call_output" {
-                    hasOutputAfterLastCall = true
+                    if let callId = payload?["call_id"] as? String, !callId.isEmpty {
+                        pendingApprovalCallIds.remove(callId)
+                    } else {
+                        hasPendingApprovalWithoutCallId = false
+                    }
                 }
             }
 
@@ -180,8 +193,12 @@ final class CodexTranscriptReader: @unchecked Sendable {
             case "task_started":
                 lastTaskStartedTime = ts
                 completedAfterLastStarted = false
+                pendingApprovalCallIds.removeAll()
+                hasPendingApprovalWithoutCallId = false
             case "task_complete":
                 if lastTaskStartedTime != nil { completedAfterLastStarted = true }
+                pendingApprovalCallIds.removeAll()
+                hasPendingApprovalWithoutCallId = false
             case "token_count":
                 if let info = payload?["info"] as? [String: Any],
                    let usage = info["total_token_usage"] as? [String: Any] {
@@ -195,7 +212,7 @@ final class CodexTranscriptReader: @unchecked Sendable {
         guard let lastType = lastEventMsgType else { return (nil, false) }
 
         let status: AgentStatus
-        let isConfirming = lastCallNeedsApproval && !hasOutputAfterLastCall
+        let isConfirming = !pendingApprovalCallIds.isEmpty || hasPendingApprovalWithoutCallId
         if isConfirming {
             status = .confirming
         } else {
@@ -216,6 +233,17 @@ final class CodexTranscriptReader: @unchecked Sendable {
 
         let complete = (status == .idle) || (turnStart != nil)
         return (CodexState(status: status, tokenUsage: lastTokenUsage, turnStart: turnStart), complete)
+    }
+
+    /// Legacy calls contain a JSON argument object. Current custom calls contain
+    /// generated JavaScript source, where property quotes inside command strings
+    /// are escaped; matching the unescaped property avoids command-text false positives.
+    static func requiresEscalation(_ raw: String) -> Bool {
+        if let data = raw.data(using: .utf8),
+           let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            return (dict["sandbox_permissions"] as? String) == "require_escalated"
+        }
+        return raw.contains(#""sandbox_permissions":"require_escalated""#)
     }
 
     /// codex total_token_usage → TokenUsage。
