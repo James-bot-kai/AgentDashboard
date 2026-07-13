@@ -3,7 +3,7 @@ macOS 中的 **agent cli 管理工具**
 
 在 macOS 菜单栏集中查看 Claude Code 和 Codex CLI：谁正在工作、谁在等待确认、谁已经完成。
 
-<img width="768" height="678" alt="2" src="https://github.com/user-attachments/assets/4b9397e5-657f-4a2e-b41c-53c2ac049ac1" />
+<img width="386" height="326" alt="2" src="https://github.com/user-attachments/assets/4b9397e5-657f-4a2e-b41c-53c2ac049ac1" />
 
 <img width="386" height="326" alt="image" src="https://github.com/user-attachments/assets/cd36f570-637c-4e1f-aefc-b05187b9c1cd" />
 
