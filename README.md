@@ -17,7 +17,6 @@ macOS 中的 **agent cli 管理工具**
 
 <img width="351" height="69" alt="image" src="https://github.com/user-attachments/assets/59fed1c5-cf49-4abc-b59b-da2db2c337a1" />
 
-<img width="341" height="66" alt="image" src="https://github.com/user-attachments/assets/2ebf79c4-2da0-45f2-ab6f-e134bbb5d34b" />
 
 
 AgentDashboard 在本机读取终端进程和会话状态，不主动上传会话内容。它可以同时监控多个项目，支持中文目录，并可点击直接跳转到对应的 iTerm2 或 Terminal.app 会话。
