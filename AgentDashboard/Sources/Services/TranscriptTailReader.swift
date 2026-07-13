@@ -96,6 +96,8 @@ final class TranscriptTailReader: @unchecked Sendable {
             return .writing
         case "Bash", "Monitor":
             return .running
+        case "AskUserQuestion":
+            return .confirming
         case "Agent", "TaskCreate", "SendMessage", "Workflow":
             return .processing
         case "WebSearch", "WebFetch",
