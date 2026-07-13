@@ -45,6 +45,21 @@ final class HookListenerTests: XCTestCase {
         XCTAssertTrue(h.explicitConfirmingSnapshot().contains("s1"))
     }
 
+    func testAskUserQuestionIsExplicitConfirming() {
+        let h = HookListener()
+        h.handleEvent(event(.preToolUse, tool: "AskUserQuestion"))
+        XCTAssertEqual(h.snapshot()["s1"], .confirming)
+        XCTAssertTrue(h.explicitConfirmingSnapshot().contains("s1"))
+    }
+
+    func testAnsweringUserQuestionClearsConfirming() {
+        let h = HookListener()
+        h.handleEvent(event(.preToolUse, tool: "AskUserQuestion"))
+        h.handleEvent(event(.postToolUse, tool: "AskUserQuestion"))
+        XCTAssertNil(h.snapshot()["s1"])
+        XCTAssertFalse(h.explicitConfirmingSnapshot().contains("s1"))
+    }
+
     func testPostToolUseFailureClearsPermissionRequest() {
         let h = HookListener()
         h.handleEvent(event(.permissionRequest, tool: "Bash"))

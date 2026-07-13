@@ -149,7 +149,7 @@ class ProcessScanner: ObservableObject {
                 self.unreadSessionIds.formUnion(justBecameIdle)
 
                 // 通知 diff:第一性——只认"真·等授权"信号:
-                //   codex require_escalated、claude PermissionRequest/permission_prompt。
+                //   codex require_escalated、claude PermissionRequest/permission_prompt/AskUserQuestion。
                 //   claude 的 PreToolUse 超时降级是推测,不通知(只用于菜单栏图标快速提示)。
                 let oldById = Dictionary(self.agents.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
                 let newIds = Set(results.agents.map { $0.id })
@@ -174,11 +174,18 @@ class ProcessScanner: ObservableObject {
                         self.notificationManager.notify(agent: newAgent, kind: .completed)
                     }
                 }
-                // claude 真 confirming:sessionId 新进 explicit 集 → notify。
-                // 用集 diff 而非 status diff,覆盖"先超时降级、后 Notification 到"的情况。
+                // Claude 真 confirming：Hook 明确信号或 transcript 中未完成的
+                // AskUserQuestion 都可进入。后者保证 App 在等待期间重启也能恢复通知。
                 let enteredExplicit = explicitConfirming.subtracting(self.lastExplicitConfirming)
                 self.lastExplicitConfirming = explicitConfirming
-                for sid in enteredExplicit {
+                let previousClaudeConfirming = Set(self.agents.compactMap { agent in
+                    agent.type == .claude && agent.status == .confirming ? agent.sessionId : nil
+                })
+                let currentClaudeConfirming = Set(results.agents.compactMap { agent in
+                    agent.type == .claude && agent.status == .confirming ? agent.sessionId : nil
+                })
+                let enteredClaudeConfirming = currentClaudeConfirming.subtracting(previousClaudeConfirming)
+                for sid in enteredExplicit.union(enteredClaudeConfirming) {
                     if let agent = results.agents.first(where: { $0.sessionId == sid && $0.type == .claude && $0.status == .confirming }) {
                         self.notificationManager.notify(agent: agent, kind: .needsConfirmation)
                     }

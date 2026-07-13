@@ -40,6 +40,14 @@ class HookListener {
             // 新工具调用证明上一个权限对话框已经结束。
             explicitConfirming.remove(event.sessionId)
             pendingSince[event.sessionId] = event.timestamp
+            // AskUserQuestion 本身就是等待用户回答的确定信号，
+            // 不会另行触发 PermissionRequest。
+            if event.toolName == "AskUserQuestion" {
+                statusMap[event.sessionId] = StatusEntry(status: .confirming, timestamp: event.timestamp)
+                explicitConfirming.insert(event.sessionId)
+                logger.debug("AskUserQuestion → confirming: session=\(event.sessionId)")
+                return
+            }
         case .permissionRequest:
             statusMap[event.sessionId] = StatusEntry(status: .confirming, timestamp: event.timestamp)
             explicitConfirming.insert(event.sessionId)
@@ -167,6 +175,8 @@ class HookListener {
             return .searching
         case "Agent", "Workflow", "TaskCreate", "SendMessage":
             return .processing
+        case "AskUserQuestion":
+            return .confirming
         default:
             if toolName.contains("search") || toolName.contains("Search") {
                 return .searching
