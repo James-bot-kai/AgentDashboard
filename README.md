@@ -17,6 +17,9 @@ macOS 中的 **agent cli 管理工具**
 
 <img width="351" height="69" alt="image" src="https://github.com/user-attachments/assets/59fed1c5-cf49-4abc-b59b-da2db2c337a1" />
 
+<img width="343" height="63" alt="image" src="https://github.com/user-attachments/assets/7622ccba-6897-4175-91c7-68b6b2aa66d5" />
+
+
 <img width="345" height="64" alt="image" src="https://github.com/user-attachments/assets/b9000465-0ae9-4923-99b2-d66f68800229" />
 
 
