@@ -180,9 +180,10 @@ final class CodexTranscriptReader: Sendable {
         /// 最后一个 task_started 之后是否出现过 task_complete(决定本轮是否还活跃)。
         var completedAfterLastStarted = false
         var lastTokenUsage: TokenUsage?
-        /// 尚未收到对应 output 的 require_escalated 工具调用。
-        var pendingApprovalCallIds: Set<String> = []
-        var hasPendingApprovalWithoutCallId = false
+        /// 尚未收到对应 output、正在等待用户操作的工具调用。
+        /// 包括权限批准与显式问题/安装选择，不把普通工具调用视为 confirming。
+        var pendingConfirmationCallIds: Set<String> = []
+        var hasPendingConfirmationWithoutCallId = false
 
         for line in lines {
             guard let data = line.data(using: .utf8),
@@ -195,21 +196,22 @@ final class CodexTranscriptReader: Sendable {
                 if pt == "function_call" || pt == "custom_tool_call" {
                     // Legacy function_call stores JSON in `arguments`; current
                     // custom_tool_call stores the same tool input in `input`.
-                    let args = (payload?["arguments"] as? String)
+                    let input = (payload?["arguments"] as? String)
                         ?? (payload?["input"] as? String)
                         ?? ""
-                    if Self.requiresEscalation(args) {
+                    let toolName = payload?["name"] as? String
+                    if Self.requiresUserConfirmation(toolName: toolName, input: input) {
                         if let callId = payload?["call_id"] as? String, !callId.isEmpty {
-                            pendingApprovalCallIds.insert(callId)
+                            pendingConfirmationCallIds.insert(callId)
                         } else {
-                            hasPendingApprovalWithoutCallId = true
+                            hasPendingConfirmationWithoutCallId = true
                         }
                     }
                 } else if pt == "function_call_output" || pt == "custom_tool_call_output" {
                     if let callId = payload?["call_id"] as? String, !callId.isEmpty {
-                        pendingApprovalCallIds.remove(callId)
+                        pendingConfirmationCallIds.remove(callId)
                     } else {
-                        hasPendingApprovalWithoutCallId = false
+                        hasPendingConfirmationWithoutCallId = false
                     }
                 }
             }
@@ -223,12 +225,12 @@ final class CodexTranscriptReader: Sendable {
             case "task_started":
                 lastTaskStartedTime = ts
                 completedAfterLastStarted = false
-                pendingApprovalCallIds.removeAll()
-                hasPendingApprovalWithoutCallId = false
+                pendingConfirmationCallIds.removeAll()
+                hasPendingConfirmationWithoutCallId = false
             case "task_complete":
                 if lastTaskStartedTime != nil { completedAfterLastStarted = true }
-                pendingApprovalCallIds.removeAll()
-                hasPendingApprovalWithoutCallId = false
+                pendingConfirmationCallIds.removeAll()
+                hasPendingConfirmationWithoutCallId = false
             case "token_count":
                 if let info = payload?["info"] as? [String: Any],
                    let usage = info["total_token_usage"] as? [String: Any] {
@@ -242,7 +244,7 @@ final class CodexTranscriptReader: Sendable {
         guard let lastType = lastEventMsgType else { return (nil, false) }
 
         let status: AgentStatus
-        let isConfirming = !pendingApprovalCallIds.isEmpty || hasPendingApprovalWithoutCallId
+        let isConfirming = !pendingConfirmationCallIds.isEmpty || hasPendingConfirmationWithoutCallId
         if isConfirming {
             status = .confirming
         } else {
@@ -265,15 +267,151 @@ final class CodexTranscriptReader: Sendable {
         return (CodexState(status: status, tokenUsage: lastTokenUsage, turnStart: turnStart), complete)
     }
 
-    /// Legacy calls contain a JSON argument object. Current custom calls contain
-    /// generated JavaScript source, where property quotes inside command strings
-    /// are escaped; matching the unescaped property avoids command-text false positives.
+    /// Codex 只有两类工具调用会阻塞等待用户：
+    /// 1. 工具输入显式请求沙箱外权限；
+    /// 2. Codex 客户端提供的用户交互工具（问题选择、插件安装确认）。
+    ///
+    /// 交互工具使用明确白名单，避免按 `request_*` 前缀误判普通工具。
+    private static let interactiveToolNames: Set<String> = [
+        "request_user_input",
+        "request_plugin_install",
+    ]
+
+    static func requiresUserConfirmation(toolName: String?, input: String) -> Bool {
+        if let toolName, interactiveToolNames.contains(toolName) {
+            return true
+        }
+        return requiresEscalation(input)
+    }
+
+    /// Legacy calls contain a JSON argument object. Current custom calls may contain
+    /// generated JavaScript source with either quoted or unquoted property names.
+    /// Tokenizing the source avoids treating the same text inside `cmd`/comments as approval.
     static func requiresEscalation(_ raw: String) -> Bool {
         if let data = raw.data(using: .utf8),
            let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
             return (dict["sandbox_permissions"] as? String) == "require_escalated"
         }
-        return raw.contains(#""sandbox_permissions":"require_escalated""#)
+        return containsEscalationProperty(inJavaScript: raw)
+    }
+
+    private enum JavaScriptToken: Equatable {
+        case word(String)
+        case string(String)
+        case symbol(UInt8)
+    }
+
+    private static func containsEscalationProperty(inJavaScript source: String) -> Bool {
+        let tokens = tokenizeJavaScript(source)
+        guard tokens.count >= 4 else { return false }
+
+        for index in 1..<(tokens.count - 2) {
+            let isObjectMemberStart = tokens[index - 1] == .symbol(0x7B) // {
+                || tokens[index - 1] == .symbol(0x2C) // ,
+            guard isObjectMemberStart else { continue }
+
+            let isPermissionsKey: Bool
+            switch tokens[index] {
+            case .word("sandbox_permissions"), .string("sandbox_permissions"):
+                isPermissionsKey = true
+            default:
+                isPermissionsKey = false
+            }
+
+            if isPermissionsKey,
+               tokens[index + 1] == .symbol(0x3A), // :
+               tokens[index + 2] == .string("require_escalated") {
+                return true
+            }
+        }
+        return false
+    }
+
+    /// Minimal lexer for generated tool-call JavaScript. String contents and comments are
+    /// emitted/skipped as a unit, so property-looking text inside a shell command cannot match.
+    private static func tokenizeJavaScript(_ source: String) -> [JavaScriptToken] {
+        let bytes = Array(source.utf8)
+        var tokens: [JavaScriptToken] = []
+        var index = 0
+
+        while index < bytes.count {
+            let byte = bytes[index]
+
+            if isASCIIWhitespace(byte) {
+                index += 1
+                continue
+            }
+
+            if byte == 0x2F, index + 1 < bytes.count { // /
+                if bytes[index + 1] == 0x2F { // line comment
+                    index += 2
+                    while index < bytes.count, bytes[index] != 0x0A, bytes[index] != 0x0D {
+                        index += 1
+                    }
+                    continue
+                }
+                if bytes[index + 1] == 0x2A { // block comment
+                    index += 2
+                    while index + 1 < bytes.count,
+                          !(bytes[index] == 0x2A && bytes[index + 1] == 0x2F) {
+                        index += 1
+                    }
+                    index = min(bytes.count, index + 2)
+                    continue
+                }
+            }
+
+            if byte == 0x22 || byte == 0x27 || byte == 0x60 { // " ' `
+                let quote = byte
+                index += 1
+                var value: [UInt8] = []
+                while index < bytes.count {
+                    let current = bytes[index]
+                    if current == 0x5C, index + 1 < bytes.count { // escaped byte
+                        value.append(bytes[index + 1])
+                        index += 2
+                    } else if current == quote {
+                        index += 1
+                        break
+                    } else {
+                        value.append(current)
+                        index += 1
+                    }
+                }
+                tokens.append(.string(String(decoding: value, as: UTF8.self)))
+                continue
+            }
+
+            if isJavaScriptIdentifierStart(byte) {
+                let start = index
+                index += 1
+                while index < bytes.count, isJavaScriptIdentifierPart(bytes[index]) {
+                    index += 1
+                }
+                tokens.append(.word(String(decoding: bytes[start..<index], as: UTF8.self)))
+                continue
+            }
+
+            tokens.append(.symbol(byte))
+            index += 1
+        }
+
+        return tokens
+    }
+
+    private static func isASCIIWhitespace(_ byte: UInt8) -> Bool {
+        byte == 0x20 || byte == 0x09 || byte == 0x0A || byte == 0x0D
+    }
+
+    private static func isJavaScriptIdentifierStart(_ byte: UInt8) -> Bool {
+        (byte >= 0x41 && byte <= 0x5A)
+            || (byte >= 0x61 && byte <= 0x7A)
+            || byte == 0x5F
+            || byte == 0x24
+    }
+
+    private static func isJavaScriptIdentifierPart(_ byte: UInt8) -> Bool {
+        isJavaScriptIdentifierStart(byte) || (byte >= 0x30 && byte <= 0x39)
     }
 
     /// codex total_token_usage → TokenUsage。

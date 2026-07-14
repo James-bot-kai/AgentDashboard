@@ -168,7 +168,7 @@ class ProcessScanner: ObservableObject {
                 self.unreadSessionIds.formUnion(justBecameIdle)
 
                 // 通知 diff:第一性——只认"真·等授权"信号:
-                //   codex require_escalated、claude PermissionRequest/permission_prompt/AskUserQuestion。
+                //   codex require_escalated/用户交互工具、claude PermissionRequest/permission_prompt/AskUserQuestion。
                 //   claude 的 PreToolUse 超时降级是推测,不通知(只用于菜单栏图标快速提示)。
                 let oldById = Dictionary(self.agents.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
                 let newIds = Set(results.agents.map { $0.id })
@@ -181,7 +181,7 @@ class ProcessScanner: ObservableObject {
                     guard let oldAgent = oldById[newAgent.id] else { continue }   // 新 agent,不通知
                     let old = oldAgent.status
                     let nw = newAgent.status
-                    // codex confirming 进入 = require_escalated(真授权)。claude 走 explicit 集(下面)。
+                    // codex confirming 进入 = 权限批准或用户交互工具。claude 走 explicit 集(下面)。
                     if old != .confirming && nw == .confirming && newAgent.type == .codex {
                         self.notificationManager.notify(agent: newAgent, kind: .needsConfirmation)
                     }

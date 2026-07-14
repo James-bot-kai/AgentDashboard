@@ -85,8 +85,57 @@ final class CodexTranscriptReaderTests: XCTestCase {
         XCTAssertNotNil(s?.turnStart)
     }
 
+    func testReadStateConfirmingFromGeneratedJavaScriptInput() {
+        let s = CodexTranscriptReader().readState(transcriptPath: fixture("confirming_custom_javascript"))
+        XCTAssertEqual(s?.status, .confirming)
+        XCTAssertNotNil(s?.turnStart)
+    }
+
+    func testReadStateConfirmingWhileRequestUserInputIsPending() {
+        let s = CodexTranscriptReader().readState(transcriptPath: fixture("confirming_user_input"))
+        XCTAssertEqual(s?.status, .confirming)
+        XCTAssertNotNil(s?.turnStart)
+    }
+
+    func testRequestUserInputOutputClearsConfirming() {
+        let s = CodexTranscriptReader().readState(transcriptPath: fixture("confirming_user_input_completed"))
+        XCTAssertNotEqual(s?.status, .confirming)
+    }
+
+    func testReadStateConfirmingWhilePluginInstallChoiceIsPending() {
+        let s = CodexTranscriptReader().readState(transcriptPath: fixture("confirming_plugin_install"))
+        XCTAssertEqual(s?.status, .confirming)
+    }
+
+    func testUserConfirmationClassifierUsesExplicitInteractiveToolSet() {
+        XCTAssertTrue(CodexTranscriptReader.requiresUserConfirmation(
+            toolName: "request_user_input", input: #"{"questions":[]}"#
+        ))
+        XCTAssertTrue(CodexTranscriptReader.requiresUserConfirmation(
+            toolName: "request_plugin_install", input: #"{"tool_id":"example"}"#
+        ))
+        XCTAssertFalse(CodexTranscriptReader.requiresUserConfirmation(
+            toolName: "request_status", input: #"{"task":"example"}"#
+        ))
+    }
+
+    func testRequiresEscalationFromUnquotedJavaScriptProperty() {
+        let input = #"const r = await tools.exec_command({ cmd: "ps", sandbox_permissions: "require_escalated" });"#
+        XCTAssertTrue(CodexTranscriptReader.requiresEscalation(input))
+    }
+
+    func testRequiresEscalationFromQuotedJavaScriptProperty() {
+        let input = #"const r = await tools.exec_command({ "cmd": "ps", "sandbox_permissions": "require_escalated" });"#
+        XCTAssertTrue(CodexTranscriptReader.requiresEscalation(input))
+    }
+
     func testRequiresEscalationIgnoresCommandText() {
-        let input = #"const r = await tools.exec_command({"cmd":"rg require_escalated"});"#
+        let input = #"const r = await tools.exec_command({ cmd: "rg 'sandbox_permissions: \"require_escalated\"'" });"#
+        XCTAssertFalse(CodexTranscriptReader.requiresEscalation(input))
+    }
+
+    func testRequiresEscalationIgnoresComments() {
+        let input = #"const r = await tools.exec_command({ cmd: "true" /* sandbox_permissions: "require_escalated" */ });"#
         XCTAssertFalse(CodexTranscriptReader.requiresEscalation(input))
     }
 
