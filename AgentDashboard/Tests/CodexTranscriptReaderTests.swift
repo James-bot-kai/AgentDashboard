@@ -85,8 +85,29 @@ final class CodexTranscriptReaderTests: XCTestCase {
         XCTAssertNotNil(s?.turnStart)
     }
 
+    func testReadStateConfirmingFromGeneratedJavaScriptInput() {
+        let s = CodexTranscriptReader().readState(transcriptPath: fixture("confirming_custom_javascript"))
+        XCTAssertEqual(s?.status, .confirming)
+        XCTAssertNotNil(s?.turnStart)
+    }
+
+    func testRequiresEscalationFromUnquotedJavaScriptProperty() {
+        let input = #"const r = await tools.exec_command({ cmd: "ps", sandbox_permissions: "require_escalated" });"#
+        XCTAssertTrue(CodexTranscriptReader.requiresEscalation(input))
+    }
+
+    func testRequiresEscalationFromQuotedJavaScriptProperty() {
+        let input = #"const r = await tools.exec_command({ "cmd": "ps", "sandbox_permissions": "require_escalated" });"#
+        XCTAssertTrue(CodexTranscriptReader.requiresEscalation(input))
+    }
+
     func testRequiresEscalationIgnoresCommandText() {
-        let input = #"const r = await tools.exec_command({"cmd":"rg require_escalated"});"#
+        let input = #"const r = await tools.exec_command({ cmd: "rg 'sandbox_permissions: \"require_escalated\"'" });"#
+        XCTAssertFalse(CodexTranscriptReader.requiresEscalation(input))
+    }
+
+    func testRequiresEscalationIgnoresComments() {
+        let input = #"const r = await tools.exec_command({ cmd: "true" /* sandbox_permissions: "require_escalated" */ });"#
         XCTAssertFalse(CodexTranscriptReader.requiresEscalation(input))
     }
 
