@@ -180,9 +180,10 @@ final class CodexTranscriptReader: Sendable {
         /// 最后一个 task_started 之后是否出现过 task_complete(决定本轮是否还活跃)。
         var completedAfterLastStarted = false
         var lastTokenUsage: TokenUsage?
-        /// 尚未收到对应 output 的 require_escalated 工具调用。
-        var pendingApprovalCallIds: Set<String> = []
-        var hasPendingApprovalWithoutCallId = false
+        /// 尚未收到对应 output、正在等待用户操作的工具调用。
+        /// 包括权限批准与显式问题/安装选择，不把普通工具调用视为 confirming。
+        var pendingConfirmationCallIds: Set<String> = []
+        var hasPendingConfirmationWithoutCallId = false
 
         for line in lines {
             guard let data = line.data(using: .utf8),
@@ -195,21 +196,22 @@ final class CodexTranscriptReader: Sendable {
                 if pt == "function_call" || pt == "custom_tool_call" {
                     // Legacy function_call stores JSON in `arguments`; current
                     // custom_tool_call stores the same tool input in `input`.
-                    let args = (payload?["arguments"] as? String)
+                    let input = (payload?["arguments"] as? String)
                         ?? (payload?["input"] as? String)
                         ?? ""
-                    if Self.requiresEscalation(args) {
+                    let toolName = payload?["name"] as? String
+                    if Self.requiresUserConfirmation(toolName: toolName, input: input) {
                         if let callId = payload?["call_id"] as? String, !callId.isEmpty {
-                            pendingApprovalCallIds.insert(callId)
+                            pendingConfirmationCallIds.insert(callId)
                         } else {
-                            hasPendingApprovalWithoutCallId = true
+                            hasPendingConfirmationWithoutCallId = true
                         }
                     }
                 } else if pt == "function_call_output" || pt == "custom_tool_call_output" {
                     if let callId = payload?["call_id"] as? String, !callId.isEmpty {
-                        pendingApprovalCallIds.remove(callId)
+                        pendingConfirmationCallIds.remove(callId)
                     } else {
-                        hasPendingApprovalWithoutCallId = false
+                        hasPendingConfirmationWithoutCallId = false
                     }
                 }
             }
@@ -223,12 +225,12 @@ final class CodexTranscriptReader: Sendable {
             case "task_started":
                 lastTaskStartedTime = ts
                 completedAfterLastStarted = false
-                pendingApprovalCallIds.removeAll()
-                hasPendingApprovalWithoutCallId = false
+                pendingConfirmationCallIds.removeAll()
+                hasPendingConfirmationWithoutCallId = false
             case "task_complete":
                 if lastTaskStartedTime != nil { completedAfterLastStarted = true }
-                pendingApprovalCallIds.removeAll()
-                hasPendingApprovalWithoutCallId = false
+                pendingConfirmationCallIds.removeAll()
+                hasPendingConfirmationWithoutCallId = false
             case "token_count":
                 if let info = payload?["info"] as? [String: Any],
                    let usage = info["total_token_usage"] as? [String: Any] {
@@ -242,7 +244,7 @@ final class CodexTranscriptReader: Sendable {
         guard let lastType = lastEventMsgType else { return (nil, false) }
 
         let status: AgentStatus
-        let isConfirming = !pendingApprovalCallIds.isEmpty || hasPendingApprovalWithoutCallId
+        let isConfirming = !pendingConfirmationCallIds.isEmpty || hasPendingConfirmationWithoutCallId
         if isConfirming {
             status = .confirming
         } else {
@@ -263,6 +265,23 @@ final class CodexTranscriptReader: Sendable {
 
         let complete = (status == .idle) || (turnStart != nil)
         return (CodexState(status: status, tokenUsage: lastTokenUsage, turnStart: turnStart), complete)
+    }
+
+    /// Codex 只有两类工具调用会阻塞等待用户：
+    /// 1. 工具输入显式请求沙箱外权限；
+    /// 2. Codex 客户端提供的用户交互工具（问题选择、插件安装确认）。
+    ///
+    /// 交互工具使用明确白名单，避免按 `request_*` 前缀误判普通工具。
+    private static let interactiveToolNames: Set<String> = [
+        "request_user_input",
+        "request_plugin_install",
+    ]
+
+    static func requiresUserConfirmation(toolName: String?, input: String) -> Bool {
+        if let toolName, interactiveToolNames.contains(toolName) {
+            return true
+        }
+        return requiresEscalation(input)
     }
 
     /// Legacy calls contain a JSON argument object. Current custom calls may contain

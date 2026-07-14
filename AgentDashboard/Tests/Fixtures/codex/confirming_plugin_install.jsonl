@@ -1,0 +1,2 @@
+{"timestamp":"2026-07-14T03:00:00.000Z","type":"event_msg","payload":{"type":"task_started"}}
+{"timestamp":"2026-07-14T03:00:01.000Z","type":"response_item","payload":{"type":"function_call","name":"request_plugin_install","arguments":"{\"tool_id\":\"example-plugin\",\"tool_type\":\"plugin\",\"action_type\":\"install\"}","call_id":"call-plugin-install-pending"}}

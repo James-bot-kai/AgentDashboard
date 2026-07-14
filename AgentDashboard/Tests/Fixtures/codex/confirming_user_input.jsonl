@@ -1,0 +1,2 @@
+{"timestamp":"2026-07-14T02:23:58.000Z","type":"event_msg","payload":{"type":"task_started"}}
+{"timestamp":"2026-07-14T02:23:59.083Z","type":"response_item","payload":{"type":"function_call","name":"request_user_input","arguments":"{\"questions\":[{\"id\":\"continue_test\",\"question\":\"是否继续？\"}]}","call_id":"call-user-input-pending"}}
