@@ -52,7 +52,8 @@ class ProcessScanner: ObservableObject {
         if let idx = agents.firstIndex(where: { $0.sessionId == sid && $0.hasUnread }) {
             let old = agents[idx]
             agents[idx] = AgentInfo(
-                pid: old.pid, type: old.type, tty: old.tty,
+                pid: old.pid, processStartedAt: old.processStartedAt,
+                type: old.type, tty: old.tty,
                 workingDirectory: old.workingDirectory, elapsedTime: old.elapsedTime,
                 status: old.status, sessionName: old.sessionName,
                 sessionId: old.sessionId, lastActiveAt: old.lastActiveAt, hasUnread: false,
@@ -394,6 +395,7 @@ class ProcessScanner: ObservableObject {
 
             agents.append(AgentInfo(
                 pid: proc.pid,
+                processStartedAt: proc.startedAt,
                 type: proc.type,
                 tty: proc.tty,
                 workingDirectory: sessionCwd,
@@ -752,7 +754,7 @@ class ProcessScanner: ObservableObject {
     /// terminal emulator ancestor. Pattern observed: claude → zsh → login → Terminal.app.
     /// The terminal app's own parent is launchd (pid 1), so we must inspect each
     /// node's comm *before* stopping on ppid <= 1.
-    private nonisolated static func detectTerminal(pid: Int) -> TerminalApp {
+    nonisolated static func detectTerminal(pid: Int) -> TerminalApp {
         var current = pid
         for _ in 0..<20 {
             guard let (ppid, comm) = psParentAndName(pid: current) else { break }
