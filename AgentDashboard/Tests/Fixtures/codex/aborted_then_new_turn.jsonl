@@ -1,0 +1,5 @@
+{"timestamp":"2026-07-15T10:00:00.000Z","type":"event_msg","payload":{"type":"task_started"}}
+{"timestamp":"2026-07-15T10:00:10.000Z","type":"event_msg","payload":{"type":"turn_aborted","reason":"interrupted","duration_ms":10000}}
+{"timestamp":"2026-07-15T10:00:10.001Z","type":"event_msg","payload":{"type":"thread_rolled_back","num_turns":1}}
+{"timestamp":"2026-07-15T10:01:00.000Z","type":"event_msg","payload":{"type":"task_started"}}
+{"timestamp":"2026-07-15T10:01:01.000Z","type":"event_msg","payload":{"type":"user_message"}}

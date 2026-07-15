@@ -158,8 +158,30 @@ final class CodexTranscriptReaderTests: XCTestCase {
         let s = CodexTranscriptReader().readState(transcriptPath: fixture("idle"))
         XCTAssertEqual(s?.status, .idle)
         XCTAssertNil(s?.turnStart)
+        XCTAssertEqual(s?.turnOutcome, .completed)
         XCTAssertEqual(s?.tokenUsage?.inputTokens, 800)
         XCTAssertEqual(s?.tokenUsage?.outputTokens, 60)
+    }
+
+    func testTurnAbortedEndsTurnAndIgnoresThreadRollback() {
+        let s = CodexTranscriptReader().readState(transcriptPath: fixture("aborted"))
+        XCTAssertEqual(s?.status, .idle)
+        XCTAssertNil(s?.turnStart)
+        XCTAssertEqual(s?.turnOutcome, .aborted)
+    }
+
+    func testTurnAbortedClearsPendingConfirmation() {
+        let s = CodexTranscriptReader().readState(transcriptPath: fixture("aborted_confirming"))
+        XCTAssertEqual(s?.status, .idle)
+        XCTAssertNil(s?.turnStart)
+        XCTAssertEqual(s?.turnOutcome, .aborted)
+    }
+
+    func testNewTurnAfterAbortResetsOutcome() {
+        let s = CodexTranscriptReader().readState(transcriptPath: fixture("aborted_then_new_turn"))
+        XCTAssertEqual(s?.status, .thinking)
+        XCTAssertNotNil(s?.turnStart)
+        XCTAssertNil(s?.turnOutcome)
     }
 
     func testReadStateRunning() {

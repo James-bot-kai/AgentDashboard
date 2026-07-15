@@ -1,0 +1,4 @@
+{"timestamp":"2026-07-15T09:00:00.000Z","type":"event_msg","payload":{"type":"task_started"}}
+{"timestamp":"2026-07-15T09:00:05.000Z","type":"response_item","payload":{"type":"function_call","name":"request_user_input","arguments":"{\"questions\":[]}","call_id":"call-aborted-confirmation"}}
+{"timestamp":"2026-07-15T09:00:10.000Z","type":"event_msg","payload":{"type":"turn_aborted","reason":"interrupted","duration_ms":10000}}
+{"timestamp":"2026-07-15T09:00:10.001Z","type":"event_msg","payload":{"type":"thread_rolled_back","num_turns":1}}

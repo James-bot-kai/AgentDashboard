@@ -6,6 +6,13 @@ enum AgentType: String, CaseIterable {
     case codex = "Codex"
 }
 
+/// 最新一轮任务如何结束。它不是当前 UI 状态，只用于区分正常完成和用户中断，
+/// 避免把 aborted 的 Active → Idle 错报为“任务完成”。
+enum AgentTurnOutcome: Sendable, Equatable {
+    case completed
+    case aborted
+}
+
 /// Which terminal emulator hosts this agent's session.
 /// Drives click-to-jump routing; detected by walking the process tree.
 enum TerminalApp: String {
@@ -102,6 +109,7 @@ struct AgentInfo: Identifiable {
     let lastActiveAt: Double
     let hasUnread: Bool
     let terminalApp: TerminalApp
+    let turnOutcome: AgentTurnOutcome?
     /// Claude 会话累计 token 用量;Codex 或无 sessionId 时为 nil。
     let tokenUsage: TokenUsage?
 
@@ -109,6 +117,7 @@ struct AgentInfo: Identifiable {
          elapsedTime: String, status: AgentStatus,
          sessionName: String?, sessionId: String?, lastActiveAt: Double = 0,
          hasUnread: Bool = false, terminalApp: TerminalApp = .unknown,
+         turnOutcome: AgentTurnOutcome? = nil,
          tokenUsage: TokenUsage? = nil) {
         self.id = "\(pid)-\(tty)"
         self.pid = pid
@@ -124,6 +133,7 @@ struct AgentInfo: Identifiable {
         self.lastActiveAt = lastActiveAt
         self.hasUnread = hasUnread
         self.terminalApp = terminalApp
+        self.turnOutcome = turnOutcome
         self.tokenUsage = tokenUsage
     }
 

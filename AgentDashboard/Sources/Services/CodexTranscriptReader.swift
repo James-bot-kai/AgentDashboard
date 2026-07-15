@@ -18,6 +18,8 @@ final class CodexTranscriptReader: Sendable {
         let tokenUsage: TokenUsage?
         /// 当前轮起始时间;nil 表示轮已结束或无法判定 → 不显示运行时间。
         let turnStart: Date?
+        /// 最近一轮的结束原因；active turn 为 nil。
+        let turnOutcome: AgentTurnOutcome?
     }
 
     struct SessionCandidate {
@@ -177,8 +179,9 @@ final class CodexTranscriptReader: Sendable {
 
         var lastEventMsgType: String?
         var lastTaskStartedTime: Date?
-        /// 最后一个 task_started 之后是否出现过 task_complete(决定本轮是否还活跃)。
-        var completedAfterLastStarted = false
+        /// 最后一个 task_started 之后是否已正常完成或被中断。
+        var endedAfterLastStarted = false
+        var turnOutcome: AgentTurnOutcome?
         var lastTokenUsage: TokenUsage?
         /// 尚未收到对应 output、正在等待用户操作的工具调用。
         /// 包括权限批准与显式问题/安装选择，不把普通工具调用视为 confirming。
@@ -219,16 +222,28 @@ final class CodexTranscriptReader: Sendable {
             guard type == "event_msg" else { continue }
             let pt = payload?["type"] as? String
             guard let pt else { continue }
-            lastEventMsgType = pt
+
+            // thread_rolled_back 是 turn_aborted 后的历史回滚记录，不代表新的活动状态，
+            // 不能覆盖刚刚确定的 aborted 终态。
+            if pt != "thread_rolled_back" {
+                lastEventMsgType = pt
+            }
 
             switch pt {
             case "task_started":
                 lastTaskStartedTime = ts
-                completedAfterLastStarted = false
+                endedAfterLastStarted = false
+                turnOutcome = nil
                 pendingConfirmationCallIds.removeAll()
                 hasPendingConfirmationWithoutCallId = false
             case "task_complete":
-                if lastTaskStartedTime != nil { completedAfterLastStarted = true }
+                if lastTaskStartedTime != nil { endedAfterLastStarted = true }
+                turnOutcome = .completed
+                pendingConfirmationCallIds.removeAll()
+                hasPendingConfirmationWithoutCallId = false
+            case "turn_aborted":
+                endedAfterLastStarted = true
+                turnOutcome = .aborted
                 pendingConfirmationCallIds.removeAll()
                 hasPendingConfirmationWithoutCallId = false
             case "token_count":
@@ -247,6 +262,8 @@ final class CodexTranscriptReader: Sendable {
         let isConfirming = !pendingConfirmationCallIds.isEmpty || hasPendingConfirmationWithoutCallId
         if isConfirming {
             status = .confirming
+        } else if turnOutcome != nil {
+            status = .idle
         } else {
             switch lastType {
             case "task_complete":                  status = .idle
@@ -257,14 +274,22 @@ final class CodexTranscriptReader: Sendable {
         }
 
         let turnStart: Date?
-        if status == .idle || completedAfterLastStarted {
+        if status == .idle || endedAfterLastStarted {
             turnStart = nil
         } else {
             turnStart = lastTaskStartedTime
         }
 
         let complete = (status == .idle) || (turnStart != nil)
-        return (CodexState(status: status, tokenUsage: lastTokenUsage, turnStart: turnStart), complete)
+        return (
+            CodexState(
+                status: status,
+                tokenUsage: lastTokenUsage,
+                turnStart: turnStart,
+                turnOutcome: turnOutcome
+            ),
+            complete
+        )
     }
 
     /// Codex 只有两类工具调用会阻塞等待用户：
