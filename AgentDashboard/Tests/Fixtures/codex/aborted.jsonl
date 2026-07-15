@@ -1,0 +1,3 @@
+{"timestamp":"2026-07-15T08:00:00.000Z","type":"event_msg","payload":{"type":"task_started"}}
+{"timestamp":"2026-07-15T08:00:45.000Z","type":"event_msg","payload":{"type":"turn_aborted","reason":"interrupted","duration_ms":45000}}
+{"timestamp":"2026-07-15T08:00:45.001Z","type":"event_msg","payload":{"type":"thread_rolled_back","num_turns":1}}

@@ -36,4 +36,44 @@ final class ProcessScannerPureTests: XCTestCase {
         XCTAssertEqual(ProcessScanner.cpuFallbackStatus(cpu: 0, stat: "R"), .running)
         XCTAssertEqual(ProcessScanner.cpuFallbackStatus(cpu: 50, stat: "S"), .running)
     }
+
+    func testAbortedTurnDoesNotNotifyCompletion() {
+        let old = agent(status: .running, elapsedTime: "31s")
+        let aborted = agent(status: .idle, turnOutcome: .aborted)
+
+        XCTAssertFalse(ProcessScanner.shouldNotifyCompletion(oldAgent: old, newAgent: aborted))
+    }
+
+    func testCompletedTurnStillNotifiesCompletion() {
+        let old = agent(status: .running, elapsedTime: "31s")
+        let completed = agent(status: .idle, turnOutcome: .completed)
+
+        XCTAssertTrue(ProcessScanner.shouldNotifyCompletion(oldAgent: old, newAgent: completed))
+    }
+
+    func testClaudeCompletionWithoutCodexOutcomeStillNotifies() {
+        let old = agent(type: .claude, status: .running, elapsedTime: "31s")
+        let completed = agent(type: .claude, status: .idle)
+
+        XCTAssertTrue(ProcessScanner.shouldNotifyCompletion(oldAgent: old, newAgent: completed))
+    }
+
+    private func agent(
+        type: AgentType = .codex,
+        status: AgentStatus,
+        elapsedTime: String = "",
+        turnOutcome: AgentTurnOutcome? = nil
+    ) -> AgentInfo {
+        AgentInfo(
+            pid: 1,
+            type: type,
+            tty: "ttys001",
+            workingDirectory: "/tmp/project",
+            elapsedTime: elapsedTime,
+            status: status,
+            sessionName: nil,
+            sessionId: nil,
+            turnOutcome: turnOutcome
+        )
+    }
 }

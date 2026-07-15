@@ -56,7 +56,8 @@ class ProcessScanner: ObservableObject {
                 workingDirectory: old.workingDirectory, elapsedTime: old.elapsedTime,
                 status: old.status, sessionName: old.sessionName,
                 sessionId: old.sessionId, lastActiveAt: old.lastActiveAt, hasUnread: false,
-                terminalApp: old.terminalApp, tokenUsage: old.tokenUsage
+                terminalApp: old.terminalApp, turnOutcome: old.turnOutcome,
+                tokenUsage: old.tokenUsage
             )
         }
     }
@@ -189,7 +190,7 @@ class ProcessScanner: ObservableObject {
                     if old == .confirming && nw != .confirming {
                         self.notificationManager.clearConfirming(agentId: newAgent.id)
                     }
-                    if old.isActive && !nw.isActive && oldAgent.elapsedSeconds > 30 {
+                    if Self.shouldNotifyCompletion(oldAgent: oldAgent, newAgent: newAgent) {
                         self.notificationManager.notify(agent: newAgent, kind: .completed)
                     }
                 }
@@ -403,6 +404,7 @@ class ProcessScanner: ObservableObject {
                 lastActiveAt: lastActive,
                 hasUnread: unreadSessionIds.contains(sessionId ?? ""),
                 terminalApp: proc.terminalApp,
+                turnOutcome: codexState?.turnOutcome,
                 tokenUsage: tokenUsage
             ))
         }
@@ -567,6 +569,15 @@ class ProcessScanner: ObservableObject {
     }
 
     // MARK: - CPU fallback
+
+    /// 只有正常结束才发送完成通知。Codex 中断也会产生 Active → Idle，
+    /// 但它不是任务完成，必须在通知层明确排除。
+    nonisolated static func shouldNotifyCompletion(oldAgent: AgentInfo, newAgent: AgentInfo) -> Bool {
+        oldAgent.status.isActive
+            && !newAgent.status.isActive
+            && oldAgent.elapsedSeconds > 30
+            && newAgent.turnOutcome != .aborted
+    }
 
     nonisolated static func cpuFallbackStatus(cpu: Double, stat: String) -> AgentStatus {
         if stat.contains("R") || cpu > 20 {
