@@ -1,7 +1,7 @@
 import Foundation
 import SwiftUI
 
-enum AgentType: String, CaseIterable {
+enum AgentType: String, CaseIterable, Sendable {
     case claude = "Claude"
     case codex = "Codex"
 }
@@ -15,7 +15,7 @@ enum AgentTurnOutcome: Sendable, Equatable {
 
 /// Which terminal emulator hosts this agent's session.
 /// Drives click-to-jump routing; detected by walking the process tree.
-enum TerminalApp: String {
+enum TerminalApp: String, Sendable {
     case iTerm2 = "iTerm2"
     case terminal = "terminal"
     case unknown = "unknown"
@@ -97,6 +97,8 @@ extension AgentStatus: Comparable {
 struct AgentInfo: Identifiable {
     let id: String
     let pid: Int
+    /// 进程身份的一部分。PID 会复用，通知点击时必须同时核对启动时间。
+    let processStartedAt: Date
     let type: AgentType
     let tty: String
     let workingDirectory: String
@@ -113,7 +115,7 @@ struct AgentInfo: Identifiable {
     /// Claude 会话累计 token 用量;Codex 或无 sessionId 时为 nil。
     let tokenUsage: TokenUsage?
 
-    init(pid: Int, type: AgentType, tty: String, workingDirectory: String,
+    init(pid: Int, processStartedAt: Date, type: AgentType, tty: String, workingDirectory: String,
          elapsedTime: String, status: AgentStatus,
          sessionName: String?, sessionId: String?, lastActiveAt: Double = 0,
          hasUnread: Bool = false, terminalApp: TerminalApp = .unknown,
@@ -121,6 +123,7 @@ struct AgentInfo: Identifiable {
          tokenUsage: TokenUsage? = nil) {
         self.id = "\(pid)-\(tty)"
         self.pid = pid
+        self.processStartedAt = processStartedAt
         self.type = type
         self.tty = tty
         self.workingDirectory = workingDirectory

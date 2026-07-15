@@ -66,6 +66,7 @@ final class ProcessScannerPureTests: XCTestCase {
     ) -> AgentInfo {
         AgentInfo(
             pid: 1,
+            processStartedAt: Date(timeIntervalSince1970: 1_000),
             type: type,
             tty: "ttys001",
             workingDirectory: "/tmp/project",

@@ -23,6 +23,9 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
     private var lastCompletedAt: [String: Date] = [:]
     private let completedDebounce: TimeInterval = 30
 
+    /// 进程退出时清理该 Agent 在本次 App 生命周期内创建的所有通知。
+    private var notificationIdentifiersByAgent: [String: Set<String>] = [:]
+
     private var authorized = false
 
     func start() {
@@ -49,6 +52,7 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
             guard confirmingNotified[id] == nil else { return }
             let identifier = "confirm-\(id)"
             confirmingNotified[id] = identifier
+            track(identifier: identifier, agentId: id)
             deliver(
                 identifier: identifier,
                 title: "\(agent.type.rawValue) 等确认",
@@ -62,6 +66,7 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
             lastCompletedAt[id] = Date()
             // 带时间戳允许多条历史共存;debounce 已拦短时重复
             let identifier = "completed-\(id)-\(Int(Date().timeIntervalSince1970))"
+            track(identifier: identifier, agentId: id)
             deliver(
                 identifier: identifier,
                 title: "\(agent.type.rawValue) 任务完成",
@@ -74,17 +79,26 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
     /// agent 离开 confirming:清掉已发横幅,允许下次再进入时重发。
     func clearConfirming(agentId: String) {
         if let identifier = confirmingNotified.removeValue(forKey: agentId) {
-            UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: [identifier])
+            let center = UNUserNotificationCenter.current()
+            center.removePendingNotificationRequests(withIdentifiers: [identifier])
+            center.removeDeliveredNotifications(withIdentifiers: [identifier])
+            untrack(identifier: identifier, agentId: agentId)
         }
     }
 
     /// agent 进程退出:清理该 agent 全部通知状态与已发横幅。
     func purge(agentId: String) {
-        clearConfirming(agentId: agentId)
+        var identifiers = notificationIdentifiersByAgent.removeValue(forKey: agentId) ?? []
+        if let confirmingIdentifier = confirmingNotified.removeValue(forKey: agentId) {
+            identifiers.insert(confirmingIdentifier)
+        }
+        // 兼容映射尚未建立或 App 升级前创建的固定确认通知。
+        identifiers.insert("confirm-\(agentId)")
+
+        let center = UNUserNotificationCenter.current()
+        center.removePendingNotificationRequests(withIdentifiers: Array(identifiers))
+        center.removeDeliveredNotifications(withIdentifiers: Array(identifiers))
         lastCompletedAt.removeValue(forKey: agentId)
-        // completed identifier 带时间戳,无法精确枚举;清 confirm 固定 identifier 即可,
-        // completed 横幅靠系统自然过期。
-        UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: ["confirm-\(agentId)"])
     }
 
     // MARK: - UNUserNotificationCenterDelegate
@@ -95,11 +109,26 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
         let info = response.notification.request.content.userInfo
-        let tty = info["tty"] as? String ?? ""
-        let app = TerminalApp(rawValue: (info["terminalApp"] as? String) ?? TerminalApp.unknown.rawValue) ?? .unknown
+        let identifier = response.notification.request.identifier
+
+        guard let target = NotificationTarget(userInfo: info) else {
+            logger.warning("拒绝旧格式通知跳转 identifier=\(identifier, privacy: .public)")
+            center.removePendingNotificationRequests(withIdentifiers: [identifier])
+            center.removeDeliveredNotifications(withIdentifiers: [identifier])
+            completionHandler()
+            return
+        }
+
+        let resolution = NotificationTargetResolver.resolve(target)
         Task { @MainActor in
-            if !tty.isEmpty {
-                TerminalBridge.activate(tty: tty, app: app)
+            switch resolution {
+            case let .destination(tty, terminalApp):
+                logger.info("通知目标验证通过 pid=\(target.pid) tty=\(tty, privacy: .public) app=\(terminalApp.rawValue, privacy: .public)")
+                TerminalBridge.activate(tty: tty, app: terminalApp)
+            case let .rejected(reason):
+                logger.warning("拒绝失效通知跳转 pid=\(target.pid) reason=\(reason.rawValue, privacy: .public)")
+                center.removePendingNotificationRequests(withIdentifiers: [identifier])
+                center.removeDeliveredNotifications(withIdentifiers: [identifier])
             }
             completionHandler()
         }
@@ -128,7 +157,18 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
     }
 
     private func userInfo(for agent: AgentInfo) -> [AnyHashable: Any] {
-        ["tty": agent.tty, "terminalApp": agent.terminalApp.rawValue]
+        NotificationTarget(agent: agent).userInfo
+    }
+
+    private func track(identifier: String, agentId: String) {
+        notificationIdentifiersByAgent[agentId, default: []].insert(identifier)
+    }
+
+    private func untrack(identifier: String, agentId: String) {
+        notificationIdentifiersByAgent[agentId]?.remove(identifier)
+        if notificationIdentifiersByAgent[agentId]?.isEmpty == true {
+            notificationIdentifiersByAgent.removeValue(forKey: agentId)
+        }
     }
 
     private func body(for agent: AgentInfo) -> String {
