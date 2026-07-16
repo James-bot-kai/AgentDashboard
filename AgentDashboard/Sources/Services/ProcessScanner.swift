@@ -132,6 +132,7 @@ class ProcessScanner: ObservableObject {
         let explicitConfirming = hookListener.explicitConfirmingSnapshot()
         let turnStarts = hookListener.turnStartSnapshot()
         let lastEvents = hookListener.lastEventSnapshot()
+        let hookTranscriptPaths = hookListener.transcriptPathSnapshot()
 
         Task.detached { [weak self] in
             let results = ProcessScanner.performScan(
@@ -140,6 +141,7 @@ class ProcessScanner: ObservableObject {
                 transcriptReader: reader, sessionsDir: sessDir, jobsDir: jDir,
                 hookStatuses: hookStatusSnapshot, turnStarts: turnStarts,
                 lastHookEvents: lastEvents,
+                hookTranscriptPaths: hookTranscriptPaths,
                 tokenStatsReader: tokenStats,
                 codexReader: codexRdr, codexSessionCache: cachedCodexSession
             )
@@ -229,6 +231,9 @@ class ProcessScanner: ObservableObject {
                 self.terminalAppCache = results.updatedTerminalAppCache
                 self.codexSessionCache = results.updatedCodexSessionCache
                 self.tokenStatsReader.prune(keeping: results.usedTranscriptPaths)
+                // 清理已退出 session 的 hook transcript 路径缓存(sessionId 唯一,旧条目清理即安全)。
+                let liveSessionIds = Set(newAgents.compactMap { $0.sessionId })
+                self.hookListener.pruneTranscriptPaths(keeping: liveSessionIds)
                 self.isScanning = false
                 if self.needsRescan {
                     self.needsRescan = false
@@ -262,6 +267,7 @@ class ProcessScanner: ObservableObject {
         hookStatuses: [String: AgentStatus],
         turnStarts: [String: Date],
         lastHookEvents: [String: Date],
+        hookTranscriptPaths: [String: String],
         tokenStatsReader: TokenStatsReader,
         codexReader: CodexTranscriptReader,
         codexSessionCache: [Int: String]
@@ -325,11 +331,12 @@ class ProcessScanner: ObservableObject {
             } else if let codexStatus = codexState?.status {
                 status = codexStatus
             } else if sessionStatus == "busy", let sid = sessionId {
-                status = inferDetailedStatus(sessionId: sid, cwd: sessionCwd, transcriptReader: transcriptReader)
+                status = inferDetailedStatus(sessionId: sid, cwd: sessionCwd, transcriptReader: transcriptReader, hookTranscriptPaths: hookTranscriptPaths)
             } else if sessionStatus == "idle" {
                 if let childStatus = findActiveChildJobStatus(
                     cwd: sessionCwd, parentPid: proc.pid, allSessions: allSessions,
-                    transcriptReader: transcriptReader, jobsDir: jobsDir
+                    transcriptReader: transcriptReader, jobsDir: jobsDir,
+                    hookTranscriptPaths: hookTranscriptPaths
                 ) {
                     status = childStatus
                 } else {
@@ -359,7 +366,7 @@ class ProcessScanner: ObservableObject {
             if let sid = sessionId, let hookTime = lastHookEvents[sid] {
                 lastActive = hookTime.timeIntervalSince1970 * 1000
             } else if let sid = sessionId,
-               let transcriptPath = transcriptReader.findTranscriptPath(sessionId: sid, cwd: sessionCwd),
+               let transcriptPath = resolveTranscriptPath(sessionId: sid, cwd: sessionCwd, transcriptReader: transcriptReader, hookTranscriptPaths: hookTranscriptPaths),
                let attrs = try? FileManager.default.attributesOfItem(atPath: transcriptPath),
                let mtime = attrs[.modificationDate] as? Date {
                 lastActive = mtime.timeIntervalSince1970 * 1000
@@ -387,7 +394,8 @@ class ProcessScanner: ObservableObject {
 
             let childLastActive = latestChildActivity(
                 parentPid: proc.pid, parentCwd: sessionCwd,
-                allSessions: allSessions, transcriptReader: transcriptReader
+                allSessions: allSessions, transcriptReader: transcriptReader,
+                hookTranscriptPaths: hookTranscriptPaths
             )
             if childLastActive > lastActive {
                 lastActive = childLastActive
@@ -395,7 +403,7 @@ class ProcessScanner: ObservableObject {
 
             let tokenUsage: TokenUsage?
             if proc.type == .claude, let sid = sessionId,
-               let transcriptPath = transcriptReader.findTranscriptPath(sessionId: sid, cwd: sessionCwd) {
+               let transcriptPath = resolveTranscriptPath(sessionId: sid, cwd: sessionCwd, transcriptReader: transcriptReader, hookTranscriptPaths: hookTranscriptPaths) {
                 tokenUsage = tokenStatsReader.accumulate(transcriptPath: transcriptPath)
                 usedTranscriptPaths.insert(transcriptPath)
             } else if proc.type == .codex {
@@ -462,7 +470,8 @@ class ProcessScanner: ObservableObject {
 
     private nonisolated static func latestChildActivity(
         parentPid: Int, parentCwd: String,
-        allSessions: [Int: [String: Any]], transcriptReader: TranscriptTailReader
+        allSessions: [Int: [String: Any]], transcriptReader: TranscriptTailReader,
+        hookTranscriptPaths: [String: String]
     ) -> Double {
         var latest: Double = 0
         for (childPid, session) in allSessions {
@@ -471,7 +480,7 @@ class ProcessScanner: ObservableObject {
                   let childCwd = session["cwd"] as? String, childCwd == parentCwd,
                   let childSessionId = session["sessionId"] as? String else { continue }
 
-            if let path = transcriptReader.findTranscriptPath(sessionId: childSessionId, cwd: childCwd),
+            if let path = resolveTranscriptPath(sessionId: childSessionId, cwd: childCwd, transcriptReader: transcriptReader, hookTranscriptPaths: hookTranscriptPaths),
                let attrs = try? FileManager.default.attributesOfItem(atPath: path),
                let mtime = attrs[.modificationDate] as? Date {
                 let ms = mtime.timeIntervalSince1970 * 1000
@@ -515,7 +524,8 @@ class ProcessScanner: ObservableObject {
 
     private nonisolated static func findActiveChildJobStatus(
         cwd: String, parentPid: Int, allSessions: [Int: [String: Any]],
-        transcriptReader: TranscriptTailReader, jobsDir: URL
+        transcriptReader: TranscriptTailReader, jobsDir: URL,
+        hookTranscriptPaths: [String: String]
     ) -> AgentStatus? {
         for (childPid, session) in allSessions {
             guard childPid != parentPid,
@@ -532,7 +542,7 @@ class ProcessScanner: ObservableObject {
                 }
             }
 
-            let transcriptStatus = inferDetailedStatus(sessionId: childSessionId, cwd: childCwd, transcriptReader: transcriptReader)
+            let transcriptStatus = inferDetailedStatus(sessionId: childSessionId, cwd: childCwd, transcriptReader: transcriptReader, hookTranscriptPaths: hookTranscriptPaths)
             if transcriptStatus != .busy {
                 return transcriptStatus
             }
@@ -575,9 +585,29 @@ class ProcessScanner: ObservableObject {
 
     // MARK: - Fine-grained status from transcript
 
-    private nonisolated static func inferDetailedStatus(sessionId: String, cwd: String, transcriptReader: TranscriptTailReader) -> AgentStatus {
-        guard let transcriptPath = transcriptReader.findTranscriptPath(
-            sessionId: sessionId, cwd: cwd
+    /// 定位 Claude transcript 文件。优先用 hook 携带的绝对路径(最权威:不受项目目录
+    /// 编码规则影响,中文/空格/worktree 均准,且免 ~/.claude/projects 目录扫描);
+    /// 未命中或文件已不存在(旧路径/session 已切走)时退化到 cwd 反推。
+    nonisolated static func resolveTranscriptPath(
+        sessionId: String, cwd: String,
+        transcriptReader: TranscriptTailReader,
+        hookTranscriptPaths: [String: String]
+    ) -> String? {
+        if let hookPath = hookTranscriptPaths[sessionId],
+           !hookPath.isEmpty,
+           FileManager.default.fileExists(atPath: hookPath) {
+            return hookPath
+        }
+        return transcriptReader.findTranscriptPath(sessionId: sessionId, cwd: cwd)
+    }
+
+    private nonisolated static func inferDetailedStatus(
+        sessionId: String, cwd: String, transcriptReader: TranscriptTailReader,
+        hookTranscriptPaths: [String: String]
+    ) -> AgentStatus {
+        guard let transcriptPath = resolveTranscriptPath(
+            sessionId: sessionId, cwd: cwd,
+            transcriptReader: transcriptReader, hookTranscriptPaths: hookTranscriptPaths
         ) else {
             return .busy
         }
