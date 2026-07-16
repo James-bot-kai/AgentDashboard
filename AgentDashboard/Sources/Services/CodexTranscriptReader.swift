@@ -33,6 +33,14 @@ final class CodexTranscriptReader: Sendable {
         let startedAt: Date?
     }
 
+    /// 尚未收到对应 output 的普通工具调用。sequence 用于并行调用时稳定选择
+    /// 最近启动的前台动作；不能只保存一个状态，否则较早调用的 output 会误清掉
+    /// 仍在运行的较新调用。
+    private struct ActiveToolCall {
+        let status: AgentStatus
+        let sequence: Int
+    }
+
     /// codex timestamp 为 ISO8601 UTC(如 "2026-07-08T03:30:05.287Z")。
     private static let isoFormatter: ISO8601DateFormatter = {
         let f = ISO8601DateFormatter()
@@ -187,6 +195,10 @@ final class CodexTranscriptReader: Sendable {
         /// 包括权限批准与显式问题/安装选择，不把普通工具调用视为 confirming。
         var pendingConfirmationCallIds: Set<String> = []
         var hasPendingConfirmationWithoutCallId = false
+        /// 普通工具必须按 call_id 独立追踪，支持并行调用和乱序完成。
+        var activeToolCalls: [String: ActiveToolCall] = [:]
+        var activeToolWithoutCallId: ActiveToolCall?
+        var nextToolSequence = 0
 
         for line in lines {
             guard let data = line.data(using: .utf8),
@@ -203,18 +215,33 @@ final class CodexTranscriptReader: Sendable {
                         ?? (payload?["input"] as? String)
                         ?? ""
                     let toolName = payload?["name"] as? String
+                    let callId = payload?["call_id"] as? String
+                    nextToolSequence += 1
                     if Self.requiresUserConfirmation(toolName: toolName, input: input) {
-                        if let callId = payload?["call_id"] as? String, !callId.isEmpty {
+                        if let callId, !callId.isEmpty {
                             pendingConfirmationCallIds.insert(callId)
                         } else {
                             hasPendingConfirmationWithoutCallId = true
+                        }
+                    } else {
+                        let call = ActiveToolCall(
+                            status: Self.activityStatus(toolName: toolName, input: input),
+                            sequence: nextToolSequence
+                        )
+                        if let callId, !callId.isEmpty {
+                            activeToolCalls[callId] = call
+                        } else {
+                            // 旧格式没有 call_id，只能保留最近一个并由无 id output 清除。
+                            activeToolWithoutCallId = call
                         }
                     }
                 } else if pt == "function_call_output" || pt == "custom_tool_call_output" {
                     if let callId = payload?["call_id"] as? String, !callId.isEmpty {
                         pendingConfirmationCallIds.remove(callId)
+                        activeToolCalls.removeValue(forKey: callId)
                     } else {
                         hasPendingConfirmationWithoutCallId = false
+                        activeToolWithoutCallId = nil
                     }
                 }
             }
@@ -225,7 +252,10 @@ final class CodexTranscriptReader: Sendable {
 
             // thread_rolled_back 是 turn_aborted 后的历史回滚记录，不代表新的活动状态，
             // 不能覆盖刚刚确定的 aborted 终态。
-            if pt != "thread_rolled_back" {
+            // token_count 只是遥测，工具专用的 *_end 紧跟在 response_item output
+            // 附近；它们都不应覆盖最后一个语义事件。否则工具刚结束会短暂回跳
+            // Running，而不是恢复到模型生成状态。
+            if !Self.nonSemanticEventTypes.contains(pt) {
                 lastEventMsgType = pt
             }
 
@@ -236,16 +266,22 @@ final class CodexTranscriptReader: Sendable {
                 turnOutcome = nil
                 pendingConfirmationCallIds.removeAll()
                 hasPendingConfirmationWithoutCallId = false
+                activeToolCalls.removeAll()
+                activeToolWithoutCallId = nil
             case "task_complete":
                 if lastTaskStartedTime != nil { endedAfterLastStarted = true }
                 turnOutcome = .completed
                 pendingConfirmationCallIds.removeAll()
                 hasPendingConfirmationWithoutCallId = false
+                activeToolCalls.removeAll()
+                activeToolWithoutCallId = nil
             case "turn_aborted":
                 endedAfterLastStarted = true
                 turnOutcome = .aborted
                 pendingConfirmationCallIds.removeAll()
                 hasPendingConfirmationWithoutCallId = false
+                activeToolCalls.removeAll()
+                activeToolWithoutCallId = nil
             case "token_count":
                 if let info = payload?["info"] as? [String: Any],
                    let usage = info["total_token_usage"] as? [String: Any] {
@@ -260,15 +296,20 @@ final class CodexTranscriptReader: Sendable {
 
         let status: AgentStatus
         let isConfirming = !pendingConfirmationCallIds.isEmpty || hasPendingConfirmationWithoutCallId
-        if isConfirming {
-            status = .confirming
-        } else if turnOutcome != nil {
+        let latestActiveTool = (Array(activeToolCalls.values) + [activeToolWithoutCallId].compactMap { $0 })
+            .max { $0.sequence < $1.sequence }
+        if turnOutcome != nil {
             status = .idle
+        } else if isConfirming {
+            status = .confirming
+        } else if let latestActiveTool {
+            status = latestActiveTool.status
         } else {
             switch lastType {
             case "task_complete":                  status = .idle
             case "user_message":                   status = .thinking
-            case "agent_message", "token_count":   status = .crafting
+            case "agent_message":                  status = .crafting
+            case "sub_agent_activity":             status = .processing
             default:                               status = .running   // task_started / turn_context 等
             }
         }
@@ -302,11 +343,52 @@ final class CodexTranscriptReader: Sendable {
         "request_plugin_install",
     ]
 
+    private static let nonSemanticEventTypes: Set<String> = [
+        "thread_rolled_back", "token_count", "patch_apply_end",
+        "web_search_end", "mcp_tool_call_end",
+    ]
+
     static func requiresUserConfirmation(toolName: String?, input: String) -> Bool {
         if let toolName, interactiveToolNames.contains(toolName) {
             return true
         }
         return requiresEscalation(input)
+    }
+
+    /// 将 Codex 工具调用映射为细粒度状态。只使用工具身份本身能够证明的语义，
+    /// 不解析 shell 命令内容，避免把组合命令或字符串误判为 Reading/Searching。
+    ///
+    /// 当前 custom_tool_call 的外层 name 通常只是 `exec`，真实工具名位于生成的
+    /// JavaScript 中，因此优先使用词法分析得到的最后一个嵌套工具调用。
+    static func activityStatus(toolName: String?, input: String) -> AgentStatus {
+        let nestedStatuses = calledToolNames(inJavaScript: input).compactMap(toolStatus(for:))
+        if let nestedStatus = nestedStatuses.last {
+            return nestedStatus
+        }
+        if let toolName, let directStatus = toolStatus(for: toolName) {
+            return directStatus
+        }
+        return .busy
+    }
+
+    private static func toolStatus(for toolName: String) -> AgentStatus? {
+        switch toolName {
+        case "apply_patch":
+            return .editing
+        case "web__run", "tool_search":
+            return .searching
+        case "view_image", "read_mcp_resource", "list_mcp_resources",
+             "list_mcp_resource_templates":
+            return .reading
+        case "create_goal", "get_goal", "update_goal", "update_plan",
+             "image_gen__imagegen", "spawn_agent", "followup_task", "send_message",
+             "interrupt_agent", "list_agents", "wait_agent":
+            return .processing
+        case "exec", "exec_command", "write_stdin", "wait", "shell":
+            return .running
+        default:
+            return nil
+        }
     }
 
     /// Legacy calls contain a JSON argument object. Current custom calls may contain
@@ -350,6 +432,26 @@ final class CodexTranscriptReader: Sendable {
             }
         }
         return false
+    }
+
+    /// 提取生成代码中的 `tools.name(...)` / `collaboration.name(...)` 调用。
+    /// tokenizer 会把字符串作为单个 token 并跳过注释，所以命令文本里的伪调用
+    /// 不会参与状态判断。
+    private static func calledToolNames(inJavaScript source: String) -> [String] {
+        let tokens = tokenizeJavaScript(source)
+        guard tokens.count >= 4 else { return [] }
+
+        var names: [String] = []
+        for index in 0...(tokens.count - 4) {
+            let isToolNamespace = tokens[index] == .word("tools")
+                || tokens[index] == .word("collaboration")
+            guard isToolNamespace,
+                  tokens[index + 1] == .symbol(0x2E), // .
+                  case let .word(name) = tokens[index + 2],
+                  tokens[index + 3] == .symbol(0x28) else { continue } // (
+            names.append(name)
+        }
+        return names
     }
 
     /// Minimal lexer for generated tool-call JavaScript. String contents and comments are

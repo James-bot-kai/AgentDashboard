@@ -72,6 +72,16 @@ final class CodexTranscriptReaderTests: XCTestCase {
         return url!.path
     }
 
+    private func readInlineState(_ records: [String]) throws -> CodexTranscriptReader.CodexState {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("codex-state-\(UUID().uuidString).jsonl")
+        try (records.joined(separator: "\n") + "\n").write(
+            to: url, atomically: true, encoding: .utf8
+        )
+        defer { try? FileManager.default.removeItem(at: url) }
+        return try XCTUnwrap(CodexTranscriptReader().readState(transcriptPath: url.path))
+    }
+
     func testReadStateConfirming() {
         let s = CodexTranscriptReader().readState(transcriptPath: fixture("confirming"))
         XCTAssertEqual(s?.status, .confirming)
@@ -137,6 +147,160 @@ final class CodexTranscriptReaderTests: XCTestCase {
     func testRequiresEscalationIgnoresComments() {
         let input = #"const r = await tools.exec_command({ cmd: "true" /* sandbox_permissions: "require_escalated" */ });"#
         XCTAssertFalse(CodexTranscriptReader.requiresEscalation(input))
+    }
+
+    func testActivityClassifierUsesHighConfidenceToolIdentity() {
+        XCTAssertEqual(CodexTranscriptReader.activityStatus(
+            toolName: "exec", input: #"await tools.apply_patch(patch);"#
+        ), .editing)
+        XCTAssertEqual(CodexTranscriptReader.activityStatus(
+            toolName: "exec", input: #"await tools.web__run({ search_query: [] });"#
+        ), .searching)
+        XCTAssertEqual(CodexTranscriptReader.activityStatus(
+            toolName: "exec", input: #"await tools.read_mcp_resource({});"#
+        ), .reading)
+        XCTAssertEqual(CodexTranscriptReader.activityStatus(
+            toolName: "exec", input: #"await collaboration.spawn_agent({});"#
+        ), .processing)
+        XCTAssertEqual(CodexTranscriptReader.activityStatus(
+            toolName: "exec", input: #"await tools.exec_command({ cmd: "rg test" });"#
+        ), .running)
+        XCTAssertEqual(CodexTranscriptReader.activityStatus(
+            toolName: "future_tool", input: "{}"
+        ), .busy)
+    }
+
+    func testActivityClassifierIgnoresToolNamesInsideStringsAndComments() {
+        let input = #"await tools.exec_command({ cmd: "echo 'tools.apply_patch(patch)'" }); /* tools.web__run({}) */"#
+        XCTAssertEqual(CodexTranscriptReader.activityStatus(toolName: "exec", input: input), .running)
+    }
+
+    func testActivityClassifierUsesLastNestedOperation() {
+        let input = #"await tools.update_plan({}); await tools.exec_command({ cmd: "swift build" });"#
+        XCTAssertEqual(CodexTranscriptReader.activityStatus(toolName: "exec", input: input), .running)
+    }
+
+    func testPendingCustomToolProducesEditingState() throws {
+        let state = try readInlineState([
+            #"{"timestamp":"2026-07-16T01:00:00.000Z","type":"event_msg","payload":{"type":"task_started"}}"#,
+            #"{"timestamp":"2026-07-16T01:00:01.000Z","type":"event_msg","payload":{"type":"user_message"}}"#,
+            #"{"timestamp":"2026-07-16T01:00:02.000Z","type":"event_msg","payload":{"type":"agent_message"}}"#,
+            #"{"timestamp":"2026-07-16T01:00:03.000Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec","input":"const patch = 'x'; await tools.apply_patch(patch);","call_id":"call-edit"}}"#,
+        ])
+
+        XCTAssertEqual(state.status, .editing)
+        XCTAssertNotNil(state.turnStart)
+    }
+
+    func testMatchingToolOutputRestoresCraftingState() throws {
+        let state = try readInlineState([
+            #"{"timestamp":"2026-07-16T01:00:00.000Z","type":"event_msg","payload":{"type":"task_started"}}"#,
+            #"{"timestamp":"2026-07-16T01:00:01.000Z","type":"event_msg","payload":{"type":"user_message"}}"#,
+            #"{"timestamp":"2026-07-16T01:00:02.000Z","type":"event_msg","payload":{"type":"agent_message"}}"#,
+            #"{"timestamp":"2026-07-16T01:00:03.000Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec","input":"await tools.apply_patch('x');","call_id":"call-edit"}}"#,
+            #"{"timestamp":"2026-07-16T01:00:04.000Z","type":"event_msg","payload":{"type":"patch_apply_end"}}"#,
+            #"{"timestamp":"2026-07-16T01:00:05.000Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"call-edit","output":"done"}}"#,
+            #"{"timestamp":"2026-07-16T01:00:06.000Z","type":"event_msg","payload":{"type":"token_count","info":{}}}"#,
+        ])
+
+        XCTAssertEqual(state.status, .crafting)
+    }
+
+    func testUnrelatedOutputDoesNotClearNewerParallelTool() throws {
+        let state = try readInlineState([
+            #"{"timestamp":"2026-07-16T01:00:00.000Z","type":"event_msg","payload":{"type":"task_started"}}"#,
+            #"{"timestamp":"2026-07-16T01:00:01.000Z","type":"event_msg","payload":{"type":"agent_message"}}"#,
+            #"{"timestamp":"2026-07-16T01:00:03.000Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec","input":"await tools.exec_command({});","call_id":"call-run"}}"#,
+            #"{"timestamp":"2026-07-16T01:00:04.000Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec","input":"await tools.web__run({});","call_id":"call-search"}}"#,
+            #"{"timestamp":"2026-07-16T01:00:05.000Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"call-run","output":"done"}}"#,
+        ])
+
+        XCTAssertEqual(state.status, .searching)
+    }
+
+    func testCompletingLatestParallelToolFallsBackToOlderTool() throws {
+        let state = try readInlineState([
+            #"{"timestamp":"2026-07-16T01:00:00.000Z","type":"event_msg","payload":{"type":"task_started"}}"#,
+            #"{"timestamp":"2026-07-16T01:00:01.000Z","type":"event_msg","payload":{"type":"agent_message"}}"#,
+            #"{"timestamp":"2026-07-16T01:00:02.000Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec","input":"await tools.exec_command({});","call_id":"call-run"}}"#,
+            #"{"timestamp":"2026-07-16T01:00:03.000Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec","input":"await tools.web__run({});","call_id":"call-search"}}"#,
+            #"{"timestamp":"2026-07-16T01:00:04.000Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"call-search","output":"done"}}"#,
+        ])
+
+        XCTAssertEqual(state.status, .running)
+    }
+
+    func testConfirmationOverridesOrdinaryActiveTool() throws {
+        let state = try readInlineState([
+            #"{"timestamp":"2026-07-16T01:00:00.000Z","type":"event_msg","payload":{"type":"task_started"}}"#,
+            #"{"timestamp":"2026-07-16T01:00:01.000Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec","input":"await tools.apply_patch('x');","call_id":"call-edit"}}"#,
+            #"{"timestamp":"2026-07-16T01:00:02.000Z","type":"response_item","payload":{"type":"function_call","name":"request_user_input","arguments":"{}","call_id":"call-question"}}"#,
+        ])
+
+        XCTAssertEqual(state.status, .confirming)
+    }
+
+    func testTaskCompleteClearsOrdinaryActiveTools() throws {
+        let state = try readInlineState([
+            #"{"timestamp":"2026-07-16T01:00:00.000Z","type":"event_msg","payload":{"type":"task_started"}}"#,
+            #"{"timestamp":"2026-07-16T01:00:01.000Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec","input":"await tools.apply_patch('x');","call_id":"call-edit"}}"#,
+            #"{"timestamp":"2026-07-16T01:00:02.000Z","type":"event_msg","payload":{"type":"task_complete"}}"#,
+        ])
+
+        XCTAssertEqual(state.status, .idle)
+        XCTAssertEqual(state.turnOutcome, .completed)
+    }
+
+    func testTurnAbortedClearsOrdinaryActiveTools() throws {
+        let state = try readInlineState([
+            #"{"timestamp":"2026-07-16T01:00:00.000Z","type":"event_msg","payload":{"type":"task_started"}}"#,
+            #"{"timestamp":"2026-07-16T01:00:01.000Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec","input":"await tools.web__run({});","call_id":"call-search"}}"#,
+            #"{"timestamp":"2026-07-16T01:00:02.000Z","type":"event_msg","payload":{"type":"turn_aborted"}}"#,
+        ])
+
+        XCTAssertEqual(state.status, .idle)
+        XCTAssertEqual(state.turnOutcome, .aborted)
+    }
+
+    func testPreviousTurnToolDoesNotLeakIntoNewTurn() throws {
+        let state = try readInlineState([
+            #"{"timestamp":"2026-07-16T01:00:00.000Z","type":"event_msg","payload":{"type":"task_started"}}"#,
+            #"{"timestamp":"2026-07-16T01:00:01.000Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec","input":"await tools.apply_patch('x');","call_id":"call-old"}}"#,
+            #"{"timestamp":"2026-07-16T01:00:02.000Z","type":"event_msg","payload":{"type":"task_complete"}}"#,
+            #"{"timestamp":"2026-07-16T01:01:00.000Z","type":"event_msg","payload":{"type":"task_started"}}"#,
+            #"{"timestamp":"2026-07-16T01:01:01.000Z","type":"event_msg","payload":{"type":"user_message"}}"#,
+        ])
+
+        XCTAssertEqual(state.status, .thinking)
+        XCTAssertNil(state.turnOutcome)
+    }
+
+    func testUnknownPendingToolUsesBusyFallback() throws {
+        let state = try readInlineState([
+            #"{"timestamp":"2026-07-16T01:00:00.000Z","type":"event_msg","payload":{"type":"task_started"}}"#,
+            #"{"timestamp":"2026-07-16T01:00:01.000Z","type":"response_item","payload":{"type":"function_call","name":"future_tool","arguments":"{}","call_id":"call-future"}}"#,
+        ])
+
+        XCTAssertEqual(state.status, .busy)
+    }
+
+    func testTokenCountDoesNotOverrideActiveToolStatus() throws {
+        let state = try readInlineState([
+            #"{"timestamp":"2026-07-16T01:00:00.000Z","type":"event_msg","payload":{"type":"task_started"}}"#,
+            #"{"timestamp":"2026-07-16T01:00:01.000Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec","input":"await tools.web__run({});","call_id":"call-search"}}"#,
+            #"{"timestamp":"2026-07-16T01:00:02.000Z","type":"event_msg","payload":{"type":"token_count","info":{}}}"#,
+        ])
+
+        XCTAssertEqual(state.status, .searching)
+    }
+
+    func testSubAgentActivityUsesProcessingFallback() throws {
+        let state = try readInlineState([
+            #"{"timestamp":"2026-07-16T01:00:00.000Z","type":"event_msg","payload":{"type":"task_started"}}"#,
+            #"{"timestamp":"2026-07-16T01:00:01.000Z","type":"event_msg","payload":{"type":"sub_agent_activity","kind":"started"}}"#,
+        ])
+
+        XCTAssertEqual(state.status, .processing)
     }
 
     func testUnrelatedOutputDoesNotClearConfirming() {
