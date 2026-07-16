@@ -196,14 +196,14 @@ final class CodexTranscriptReaderTests: XCTestCase {
         XCTAssertTrue(CodexTranscriptReader.escalationRequests(from: input).isEmpty)
     }
 
-    func testAllowedEscalationRunsWithoutConfirming() throws {
+    func testAllowedLogEscalationReadsWithoutConfirming() throws {
         let state = try readInlineState([
             #"{"timestamp":"2026-07-16T01:00:00.000Z","type":"event_msg","payload":{"type":"task_started"}}"#,
             #"{"timestamp":"2026-07-16T01:00:01.000Z","type":"turn_context","payload":{"approval_policy":"on-request","approvals_reviewer":"user","cwd":"/tmp"}}"#,
             #"{"timestamp":"2026-07-16T01:00:02.000Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec","input":"await tools.exec_command({ cmd: '/usr/bin/log show --last 2m', sandbox_permissions: 'require_escalated' });","call_id":"call-allowed"}}"#,
         ], policyDecision: .allow)
 
-        XCTAssertEqual(state.status, .running)
+        XCTAssertEqual(state.status, .reading)
     }
 
     func testUnmatchedEscalationStillConfirms() throws {
