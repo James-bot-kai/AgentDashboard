@@ -11,14 +11,16 @@ final class HookListenerTests: XCTestCase {
         _ sid: String = "s1",
         tool: String? = nil,
         msg: String? = nil,
-        notificationType: String? = nil
+        notificationType: String? = nil,
+        timestamp: Date = Date()
     ) -> HookEvent {
         HookEvent(
             hookType: type,
             sessionId: sid,
             toolName: tool,
             message: msg,
-            notificationType: notificationType
+            notificationType: notificationType,
+            timestamp: timestamp
         )
     }
 
@@ -81,6 +83,27 @@ final class HookListenerTests: XCTestCase {
         h.handleEvent(event(.notification, notificationType: "idle_prompt"))
         XCTAssertEqual(h.snapshot()["s1"], .running)
         XCTAssertFalse(h.explicitConfirmingSnapshot().contains("s1"))
+    }
+
+    func testIdleNotificationDoesNotMoveLastStopTime() {
+        let h = HookListener()
+        let stopTime = Date(timeIntervalSince1970: 1_000)
+        h.handleEvent(event(.stop, timestamp: stopTime))
+        h.handleEvent(event(
+            .notification,
+            notificationType: "idle_prompt",
+            timestamp: Date(timeIntervalSince1970: 2_000)
+        ))
+
+        XCTAssertEqual(h.lastStopSnapshot()["s1"], stopTime)
+    }
+
+    func testNewTurnClearsPreviousStopTime() {
+        let h = HookListener()
+        h.handleEvent(event(.stop, timestamp: Date(timeIntervalSince1970: 1_000)))
+        h.handleEvent(event(.userPromptSubmit, timestamp: Date(timeIntervalSince1970: 2_000)))
+
+        XCTAssertNil(h.lastStopSnapshot()["s1"])
     }
 
     func testNotificationWithoutPendingToolIsIgnored() {

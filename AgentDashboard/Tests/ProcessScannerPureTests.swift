@@ -100,6 +100,71 @@ final class ProcessScannerPureTests: XCTestCase {
         ))
     }
 
+    func testResolveTranscriptPathPrefersHookAbsolutePath() throws {
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent("hook-transcript-\(UUID().uuidString).jsonl")
+        try Data().write(to: tmp)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+
+        // 中文/空格 cwd 反推必然失配,但 hook 提供的绝对路径应直接命中——这正是本改动的目的。
+        let path = ProcessScanner.resolveTranscriptPath(
+            sessionId: "any",
+            cwd: "/Users/某人/代码 脚本",
+            transcriptReader: TranscriptTailReader(),
+            hookTranscriptPaths: ["any": tmp.path]
+        )
+
+        XCTAssertEqual(path, tmp.path)
+    }
+
+    func testResolveTranscriptPathFallsBackWhenHookFileMissing() {
+        // hook 路径不存在且无缓存,.cwd 无法反推到真实 projects 目录 → 退化返回 nil。
+        let path = ProcessScanner.resolveTranscriptPath(
+            sessionId: "definitely-nonexistent-\(UUID().uuidString)",
+            cwd: "/tmp/no-such-project",
+            transcriptReader: TranscriptTailReader(),
+            hookTranscriptPaths: [:]
+        )
+
+        XCTAssertNil(path)
+    }
+
+    func testClaudeLastActivePrefersStopHook() {
+        let stop = Date(timeIntervalSince1970: 4_000)
+
+        XCTAssertEqual(ProcessScanner.claudeLastActiveAt(
+            stopHookAt: stop,
+            statusUpdatedAt: 3_000_000,
+            updatedAt: 2_000_000,
+            sessionFileModifiedAt: Date(timeIntervalSince1970: 1_000)
+        ), 4_000_000)
+    }
+
+    func testClaudeLastActiveRestoresFromStatusTimestampAfterRestart() {
+        XCTAssertEqual(ProcessScanner.claudeLastActiveAt(
+            stopHookAt: nil,
+            statusUpdatedAt: 3_000_000,
+            updatedAt: 2_000_000,
+            sessionFileModifiedAt: Date(timeIntervalSince1970: 1_000)
+        ), 3_000_000)
+    }
+
+    func testClaudeLastActiveFallsBackWithoutStatusTimestamp() {
+        XCTAssertEqual(ProcessScanner.claudeLastActiveAt(
+            stopHookAt: nil,
+            statusUpdatedAt: 0,
+            updatedAt: 2_000_000,
+            sessionFileModifiedAt: Date(timeIntervalSince1970: 1_000)
+        ), 2_000_000)
+
+        XCTAssertEqual(ProcessScanner.claudeLastActiveAt(
+            stopHookAt: nil,
+            statusUpdatedAt: 0,
+            updatedAt: 0,
+            sessionFileModifiedAt: Date(timeIntervalSince1970: 1_000)
+        ), 1_000_000)
+    }
+
     private func agent(
         type: AgentType = .codex,
         status: AgentStatus,
