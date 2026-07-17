@@ -131,7 +131,7 @@ class ProcessScanner: ObservableObject {
         let hookStatusSnapshot = hookListener.snapshot()
         let explicitConfirming = hookListener.explicitConfirmingSnapshot()
         let turnStarts = hookListener.turnStartSnapshot()
-        let lastEvents = hookListener.lastEventSnapshot()
+        let lastStops = hookListener.lastStopSnapshot()
         let hookTranscriptPaths = hookListener.transcriptPathSnapshot()
 
         Task.detached { [weak self] in
@@ -140,7 +140,7 @@ class ProcessScanner: ObservableObject {
                 terminalAppCache: cachedTerminalApp,
                 transcriptReader: reader, sessionsDir: sessDir, jobsDir: jDir,
                 hookStatuses: hookStatusSnapshot, turnStarts: turnStarts,
-                lastHookEvents: lastEvents,
+                lastStopHooks: lastStops,
                 hookTranscriptPaths: hookTranscriptPaths,
                 tokenStatsReader: tokenStats,
                 codexReader: codexRdr, codexSessionCache: cachedCodexSession
@@ -231,9 +231,9 @@ class ProcessScanner: ObservableObject {
                 self.terminalAppCache = results.updatedTerminalAppCache
                 self.codexSessionCache = results.updatedCodexSessionCache
                 self.tokenStatsReader.prune(keeping: results.usedTranscriptPaths)
-                // 清理已退出 session 的 hook transcript 路径缓存(sessionId 唯一,旧条目清理即安全)。
+                // 清理已退出 session 的 Hook 路径/Stop 时间缓存(sessionId 唯一,旧条目清理即安全)。
                 let liveSessionIds = Set(newAgents.compactMap { $0.sessionId })
-                self.hookListener.pruneTranscriptPaths(keeping: liveSessionIds)
+                self.hookListener.pruneSessionCaches(keeping: liveSessionIds)
                 self.isScanning = false
                 if self.needsRescan {
                     self.needsRescan = false
@@ -266,7 +266,7 @@ class ProcessScanner: ObservableObject {
         jobsDir: URL,
         hookStatuses: [String: AgentStatus],
         turnStarts: [String: Date],
-        lastHookEvents: [String: Date],
+        lastStopHooks: [String: Date],
         hookTranscriptPaths: [String: String],
         tokenStatsReader: TokenStatsReader,
         codexReader: CodexTranscriptReader,
@@ -295,6 +295,7 @@ class ProcessScanner: ObservableObject {
             let sessionCwd = sessionData?["cwd"] as? String ?? proc.cwd
             let sessionName = sessionData?["name"] as? String
             let kind = sessionData?["kind"] as? String
+            let statusUpdatedAt = sessionData?["statusUpdatedAt"] as? Double ?? 0
             let updatedAt = sessionData?["updatedAt"] as? Double ?? 0
 
             if kind != nil && kind != "interactive" { continue }
@@ -363,42 +364,41 @@ class ProcessScanner: ObservableObject {
             }
 
             var lastActive: Double
-            if let sid = sessionId, let hookTime = lastHookEvents[sid] {
-                lastActive = hookTime.timeIntervalSince1970 * 1000
-            } else if let sid = sessionId,
-               let transcriptPath = resolveTranscriptPath(sessionId: sid, cwd: sessionCwd, transcriptReader: transcriptReader, hookTranscriptPaths: hookTranscriptPaths),
-               let attrs = try? FileManager.default.attributesOfItem(atPath: transcriptPath),
-               let mtime = attrs[.modificationDate] as? Date {
-                lastActive = mtime.timeIntervalSince1970 * 1000
-            } else if let codexPath = codexSessionPath,
-               let attrs = try? FileManager.default.attributesOfItem(atPath: codexPath),
-               let mtime = attrs[.modificationDate] as? Date {
-                // codex:用 session rollout 文件 mtime 作为最近活动时间(同 claude transcript mtime)。
-                // 同时驱动 idle 时的 "Xs ago" 显示与按最近活动排序。
-                lastActive = mtime.timeIntervalSince1970 * 1000
-            } else {
+            switch proc.type {
+            case .claude:
+                // Claude transcript 的 mtime 可能被历史维护/摘要刷新，不能代表用户任务完成。
+                // Idle 时间只采用具有“状态结束”语义的数据；重启后由 session JSON 恢复。
                 let sessionFile = sessionsDir.appendingPathComponent("\(proc.pid).json")
-                if let attrs = try? FileManager.default.attributesOfItem(atPath: sessionFile.path),
+                let sessionFileModifiedAt = ((try? FileManager.default.attributesOfItem(
+                    atPath: sessionFile.path
+                ))?[.modificationDate] as? Date)
+                lastActive = claudeLastActiveAt(
+                    stopHookAt: sessionId.flatMap { lastStopHooks[$0] },
+                    statusUpdatedAt: statusUpdatedAt,
+                    updatedAt: updatedAt,
+                    sessionFileModifiedAt: sessionFileModifiedAt
+                )
+            case .codex:
+                if let codexPath = codexSessionPath,
+                   let attrs = try? FileManager.default.attributesOfItem(atPath: codexPath),
                    let mtime = attrs[.modificationDate] as? Date {
+                    // Codex rollout 是其状态事实源，继续用文件 mtime 驱动 Idle "ago"。
                     lastActive = mtime.timeIntervalSince1970 * 1000
-                } else if updatedAt > 0 {
-                    lastActive = updatedAt
-                } else if proc.type == .codex {
-                    // codex 无 claude sessionFile:用进程启动时间兜底,
-                    // 保证 idle 时 "Xs ago" 有值(否则 lastActive=0 不渲染)。
-                    lastActive = proc.startedAt.timeIntervalSince1970 * 1000
                 } else {
-                    lastActive = 0
+                    lastActive = proc.startedAt.timeIntervalSince1970 * 1000
                 }
             }
 
-            let childLastActive = latestChildActivity(
-                parentPid: proc.pid, parentCwd: sessionCwd,
-                allSessions: allSessions, transcriptReader: transcriptReader,
-                hookTranscriptPaths: hookTranscriptPaths
-            )
-            if childLastActive > lastActive {
-                lastActive = childLastActive
+            // ~/.claude/jobs 只属于 Claude。Codex 的时间只由 rollout 决定，不能被
+            // 相同 cwd 下残留的 Claude 后台 session 覆盖。
+            if proc.type == .claude {
+                let childLastActive = latestChildActivity(
+                    parentPid: proc.pid, parentCwd: sessionCwd,
+                    allSessions: allSessions, lastStopHooks: lastStopHooks
+                )
+                if childLastActive > lastActive {
+                    lastActive = childLastActive
+                }
             }
 
             let tokenUsage: TokenUsage?
@@ -470,8 +470,7 @@ class ProcessScanner: ObservableObject {
 
     private nonisolated static func latestChildActivity(
         parentPid: Int, parentCwd: String,
-        allSessions: [Int: [String: Any]], transcriptReader: TranscriptTailReader,
-        hookTranscriptPaths: [String: String]
+        allSessions: [Int: [String: Any]], lastStopHooks: [String: Date]
     ) -> Double {
         var latest: Double = 0
         for (childPid, session) in allSessions {
@@ -480,16 +479,41 @@ class ProcessScanner: ObservableObject {
                   let childCwd = session["cwd"] as? String, childCwd == parentCwd,
                   let childSessionId = session["sessionId"] as? String else { continue }
 
-            if let path = resolveTranscriptPath(sessionId: childSessionId, cwd: childCwd, transcriptReader: transcriptReader, hookTranscriptPaths: hookTranscriptPaths),
-               let attrs = try? FileManager.default.attributesOfItem(atPath: path),
-               let mtime = attrs[.modificationDate] as? Date {
-                let ms = mtime.timeIntervalSince1970 * 1000
-                if ms > latest { latest = ms }
-            } else if let ua = session["updatedAt"] as? Double, ua > latest {
-                latest = ua
+            let childLastActive = claudeLastActiveAt(
+                stopHookAt: lastStopHooks[childSessionId],
+                statusUpdatedAt: session["statusUpdatedAt"] as? Double ?? 0,
+                updatedAt: session["updatedAt"] as? Double ?? 0,
+                sessionFileModifiedAt: nil
+            )
+            if childLastActive > latest {
+                latest = childLastActive
             }
         }
         return latest
+    }
+
+    /// Claude 的 Idle 时间必须来自有明确状态语义的事实源，而不是 transcript mtime。
+    /// 优先级：本次运行收到的 Stop Hook → session 状态变更时间 → session 更新时间
+    /// → session 文件 mtime。所有返回值统一为毫秒时间戳。
+    nonisolated static func claudeLastActiveAt(
+        stopHookAt: Date?,
+        statusUpdatedAt: Double,
+        updatedAt: Double,
+        sessionFileModifiedAt: Date?
+    ) -> Double {
+        if let stopHookAt {
+            return stopHookAt.timeIntervalSince1970 * 1000
+        }
+        if statusUpdatedAt > 0 {
+            return statusUpdatedAt
+        }
+        if updatedAt > 0 {
+            return updatedAt
+        }
+        if let sessionFileModifiedAt {
+            return sessionFileModifiedAt.timeIntervalSince1970 * 1000
+        }
+        return 0
     }
 
     // MARK: - Load all sessions for cross-referencing
