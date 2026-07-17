@@ -12,7 +12,9 @@ class HookListener {
 
     private var statusMap: [String: StatusEntry] = [:]
     private var turnStartMap: [String: Date] = [:]
-    private var lastEventMap: [String: Date] = [:]
+    /// session → 最近一次 Stop Hook 的接收时间。它表示一轮任务真正结束的时刻，
+    /// 与普通 Hook 活动时间分开，避免 idle_prompt 等通知刷新 Idle 的 "ago"。
+    private var lastStopMap: [String: Date] = [:]
     /// session → hook 携带的 transcript 绝对路径。transcript 路径在进程存活期间稳定,
     /// 不受 statusMap 的 staleTTL 限制;进程退出时由 ProcessScanner 按 live sessionId prune。
     private var transcriptPathMap: [String: String] = [:]
@@ -34,8 +36,6 @@ class HookListener {
             transcriptPathMap[event.sessionId] = path
         }
 
-        lastEventMap[event.sessionId] = event.timestamp
-
         if event.hookType == .userPromptSubmit {
             turnStartMap[event.sessionId] = event.timestamp
         } else if event.hookType == .stop {
@@ -46,6 +46,7 @@ class HookListener {
 
         switch event.hookType {
         case .preToolUse:
+            lastStopMap.removeValue(forKey: event.sessionId)
             // 新工具调用证明上一个权限对话框已经结束。
             explicitConfirming.remove(event.sessionId)
             pendingSince[event.sessionId] = event.timestamp
@@ -58,11 +59,13 @@ class HookListener {
                 return
             }
         case .permissionRequest:
+            lastStopMap.removeValue(forKey: event.sessionId)
             statusMap[event.sessionId] = StatusEntry(status: .confirming, timestamp: event.timestamp)
             explicitConfirming.insert(event.sessionId)
             logger.debug("PermissionRequest → confirming: session=\(event.sessionId) tool=\(event.toolName ?? "-")")
             return
         case .postToolUse, .postToolUseFailure:
+            lastStopMap.removeValue(forKey: event.sessionId)
             pendingSince.removeValue(forKey: event.sessionId)
             explicitConfirming.remove(event.sessionId)
             // 工具执行完成 → 若此前在等确认,清除 confirming(让 transcript 重新接管状态)。
@@ -76,6 +79,7 @@ class HookListener {
             let isPermissionPrompt = event.notificationType == "permission_prompt"
                 || (event.notificationType == nil && pendingSince[event.sessionId] != nil)
             if isPermissionPrompt {
+                lastStopMap.removeValue(forKey: event.sessionId)
                 statusMap[event.sessionId] = StatusEntry(status: .confirming, timestamp: event.timestamp)
                 explicitConfirming.insert(event.sessionId)
                 logger.debug("Notification → confirming: session=\(event.sessionId)")
@@ -83,7 +87,12 @@ class HookListener {
                 logger.debug("Notification → ignored (idle): session=\(event.sessionId) msg=\(event.message ?? "-")")
             }
             return
-        case .stop, .userPromptSubmit:
+        case .stop:
+            lastStopMap[event.sessionId] = event.timestamp
+            pendingSince.removeValue(forKey: event.sessionId)
+            explicitConfirming.remove(event.sessionId)
+        case .userPromptSubmit:
+            lastStopMap.removeValue(forKey: event.sessionId)
             pendingSince.removeValue(forKey: event.sessionId)
             explicitConfirming.remove(event.sessionId)
         }
@@ -109,6 +118,7 @@ class HookListener {
     func clearSession(_ sessionId: String) {
         statusMap.removeValue(forKey: sessionId)
         explicitConfirming.remove(sessionId)
+        lastStopMap.removeValue(forKey: sessionId)
     }
 
     func clearStaleEntries() {
@@ -143,8 +153,8 @@ class HookListener {
         return turnStartMap
     }
 
-    func lastEventSnapshot() -> [String: Date] {
-        return lastEventMap
+    func lastStopSnapshot() -> [String: Date] {
+        return lastStopMap
     }
 
     /// 当前各 session 的 hook transcript 绝对路径快照。扫描时优先用。
@@ -153,8 +163,9 @@ class HookListener {
     }
 
     /// 清理已退出 session 的条目(sessionId 为 uuid 不会复用,旧条目清理即安全)。
-    func pruneTranscriptPaths(keeping sessionIds: Set<String>) {
+    func pruneSessionCaches(keeping sessionIds: Set<String>) {
         transcriptPathMap = transcriptPathMap.filter { sessionIds.contains($0.key) }
+        lastStopMap = lastStopMap.filter { sessionIds.contains($0.key) }
     }
 
     private func mapEventToStatus(_ event: HookEvent) -> AgentStatus? {

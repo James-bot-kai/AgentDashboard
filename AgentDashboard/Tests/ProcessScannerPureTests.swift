@@ -129,6 +129,42 @@ final class ProcessScannerPureTests: XCTestCase {
         XCTAssertNil(path)
     }
 
+    func testClaudeLastActivePrefersStopHook() {
+        let stop = Date(timeIntervalSince1970: 4_000)
+
+        XCTAssertEqual(ProcessScanner.claudeLastActiveAt(
+            stopHookAt: stop,
+            statusUpdatedAt: 3_000_000,
+            updatedAt: 2_000_000,
+            sessionFileModifiedAt: Date(timeIntervalSince1970: 1_000)
+        ), 4_000_000)
+    }
+
+    func testClaudeLastActiveRestoresFromStatusTimestampAfterRestart() {
+        XCTAssertEqual(ProcessScanner.claudeLastActiveAt(
+            stopHookAt: nil,
+            statusUpdatedAt: 3_000_000,
+            updatedAt: 2_000_000,
+            sessionFileModifiedAt: Date(timeIntervalSince1970: 1_000)
+        ), 3_000_000)
+    }
+
+    func testClaudeLastActiveFallsBackWithoutStatusTimestamp() {
+        XCTAssertEqual(ProcessScanner.claudeLastActiveAt(
+            stopHookAt: nil,
+            statusUpdatedAt: 0,
+            updatedAt: 2_000_000,
+            sessionFileModifiedAt: Date(timeIntervalSince1970: 1_000)
+        ), 2_000_000)
+
+        XCTAssertEqual(ProcessScanner.claudeLastActiveAt(
+            stopHookAt: nil,
+            statusUpdatedAt: 0,
+            updatedAt: 0,
+            sessionFileModifiedAt: Date(timeIntervalSince1970: 1_000)
+        ), 1_000_000)
+    }
+
     private func agent(
         type: AgentType = .codex,
         status: AgentStatus,
