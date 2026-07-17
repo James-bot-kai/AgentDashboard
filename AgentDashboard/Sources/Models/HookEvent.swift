@@ -16,6 +16,10 @@ struct HookEvent: Sendable {
     let toolName: String?
     let message: String?
     let notificationType: String?
+    /// hook 输入自带的 transcript 绝对路径(所有 hook 类型都携带)。
+    /// 优于用 cwd 反推定位:不受项目目录编码规则影响(中文/空格/worktree 均准),
+    /// 且免去 ~/.claude/projects 目录扫描。
+    let transcriptPath: String?
     let timestamp: Date
 
     /// 直接构造(测试用)。
@@ -25,6 +29,7 @@ struct HookEvent: Sendable {
         toolName: String? = nil,
         message: String? = nil,
         notificationType: String? = nil,
+        transcriptPath: String? = nil,
         timestamp: Date = Date()
     ) {
         self.hookType = hookType
@@ -32,6 +37,7 @@ struct HookEvent: Sendable {
         self.toolName = toolName
         self.message = message
         self.notificationType = notificationType
+        self.transcriptPath = transcriptPath
         self.timestamp = timestamp
     }
 
@@ -46,5 +52,6 @@ struct HookEvent: Sendable {
         self.toolName = json["tool_name"] as? String
         self.message = json["message"] as? String
         self.notificationType = json["notification_type"] as? String
+        self.transcriptPath = json["transcript_path"] as? String
     }
 }

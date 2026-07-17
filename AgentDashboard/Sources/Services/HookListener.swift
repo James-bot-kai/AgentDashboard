@@ -13,6 +13,9 @@ class HookListener {
     private var statusMap: [String: StatusEntry] = [:]
     private var turnStartMap: [String: Date] = [:]
     private var lastEventMap: [String: Date] = [:]
+    /// session → hook 携带的 transcript 绝对路径。transcript 路径在进程存活期间稳定,
+    /// 不受 statusMap 的 staleTTL 限制;进程退出时由 ProcessScanner 按 live sessionId prune。
+    private var transcriptPathMap: [String: String] = [:]
     /// session → PreToolUse 时间(PostToolUse 清)。仅用于兼容旧版
     /// 不含 notification_type 的 Notification payload。
     private var pendingSince: [String: Date] = [:]
@@ -25,6 +28,12 @@ class HookListener {
     private let confirmingTTL: TimeInterval = 3600
 
     func handleEvent(_ event: HookEvent) {
+        // transcript_path 在 session 存活期间稳定,任何 hook 都携带。
+        // 缓存绝对路径,扫描时优先用,免 cwd 反推与目录扫描。
+        if let path = event.transcriptPath, !path.isEmpty {
+            transcriptPathMap[event.sessionId] = path
+        }
+
         lastEventMap[event.sessionId] = event.timestamp
 
         if event.hookType == .userPromptSubmit {
@@ -136,6 +145,16 @@ class HookListener {
 
     func lastEventSnapshot() -> [String: Date] {
         return lastEventMap
+    }
+
+    /// 当前各 session 的 hook transcript 绝对路径快照。扫描时优先用。
+    func transcriptPathSnapshot() -> [String: String] {
+        transcriptPathMap
+    }
+
+    /// 清理已退出 session 的条目(sessionId 为 uuid 不会复用,旧条目清理即安全)。
+    func pruneTranscriptPaths(keeping sessionIds: Set<String>) {
+        transcriptPathMap = transcriptPathMap.filter { sessionIds.contains($0.key) }
     }
 
     private func mapEventToStatus(_ event: HookEvent) -> AgentStatus? {
